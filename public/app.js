@@ -117,7 +117,7 @@ const VIEW_DOMAIN = {
   dash: "dashboard", rentabilite: "rentabilite", emps: "rh", organigramme: "rh", paie: "paie", conges: "conges", runs: "paie",
   chantiers: "chantiers", incidents: "securite", documents: "ged", ouvrages: "devis", devis: "devis", factures: "facturation",
   articles: "stock", "demandes-achat": "achats", "bons-commande": "achats", fournisseurs: "tiers", "sous-traitants": "tiers",
-  integrations: null, users: "admin",
+  integrations: null, users: "admin", societe: "admin",
 };
 let myPerms = ["*"];
 function allowed(domain) { return domain == null || myPerms.includes("*") || myPerms.includes(domain); }
@@ -141,7 +141,7 @@ const ROUTES = {
   ouvrages: renderOuvrages, devis: renderDevis, factures: renderFactures, articles: renderStock,
   "bons-commande": renderCommandes, chantiers: renderChantiers, incidents: renderSecurite,
   documents: renderGED, fournisseurs: renderFournisseurs, "sous-traitants": renderSousTraitants,
-  integrations: renderIntegrations,
+  integrations: renderIntegrations, societe: renderSociete,
 };
 async function show(v) {
   if (!allowed(VIEW_DOMAIN[v])) { V().innerHTML = `<div class="warn">⛔ Accès non autorisé pour votre rôle.</div>`; return; }
@@ -430,13 +430,14 @@ async function runDetail(runId, label) {
     </tbody></table>
     <div class="mactions"><button class="btn" onclick="el('modal-root').innerHTML=''">Fermer</button></div></div></div>`;
 }
-async function downloadPdf(id, mat) {
+async function downloadPdf(id, mat) { return downloadDoc(`/api/payslips/${id}/pdf`, `bulletin-${mat}.pdf`); }
+async function downloadDoc(path, filename) {
   try {
-    const res = await fetch(`/api/payslips/${id}/pdf`, { headers: { Authorization: "Bearer " + token } });
+    const res = await fetch(path, { headers: { Authorization: "Bearer " + token, "X-Company-Id": activeCompany || "" } });
     if (!res.ok) { alert("Erreur lors de la génération du PDF"); return; }
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = `bulletin-${mat}.pdf`; document.body.appendChild(a); a.click();
+    const a = document.createElement("a"); a.href = url; a.download = filename; document.body.appendChild(a); a.click();
     a.remove(); URL.revokeObjectURL(url);
   } catch (e) { alert(e.message); }
 }
@@ -541,7 +542,7 @@ async function renderDevis() {
   V().innerHTML = `<div class="bar"><div><h1>Devis</h1><div class="sub">Déboursé sec · coefficient de marge · prix de vente · TVA 20 %.</div></div>
     <button class="btn sm" onclick="newDevis()">+ Nouveau devis</button></div>
     <div class="card"><table><thead><tr><th>N°</th><th>Client</th><th>Objet</th><th class="r">Déboursé</th><th class="r">Marge</th><th class="r">TTC</th><th></th></tr></thead><tbody>
-    ${list.length ? list.map((d) => `<tr><td class="mono">${d.numero || d.id}</td><td>${d.client || ""}</td><td>${d.objet || ""}</td><td class="r mono">${fmt(d.total_debourse)}</td><td class="r mono">${fmt(d.total_marge)}</td><td class="r mono">${fmt(d.total_ttc)}</td><td class="r"><button class="btn sm" onclick="situationFrom(${d.id})">Situation</button> <button class="btn sm danger" onclick="delDevis(${d.id})">×</button></td></tr>`).join("") : `<tr><td colspan="7" class="muted">Aucun devis.</td></tr>`}
+    ${list.length ? list.map((d) => `<tr><td class="mono">${d.numero || d.id}</td><td>${d.client || ""}</td><td>${d.objet || ""}</td><td class="r mono">${fmt(d.total_debourse)}</td><td class="r mono">${fmt(d.total_marge)}</td><td class="r mono">${fmt(d.total_ttc)}</td><td class="r"><button class="btn sm ghost" onclick="downloadDoc('/api/devis/${d.id}/pdf','devis-${d.numero || d.id}.pdf')">📄 PDF</button> <button class="btn sm" onclick="situationFrom(${d.id})">Situation</button> <button class="btn sm danger" onclick="delDevis(${d.id})">×</button></td></tr>`).join("") : `<tr><td colspan="7" class="muted">Aucun devis.</td></tr>`}
     </tbody></table></div>`;
 }
 async function newDevis() {
@@ -599,7 +600,7 @@ async function renderFactures() {
   V().innerHTML = `<div class="bar"><div><h1>Factures &amp; situations</h1><div class="sub">Situations de travaux (avancement), retenue de garantie, net à payer.</div></div>
     <button class="btn sm" onclick="situationFrom()">+ Situation</button></div>
     <div class="card"><table><thead><tr><th>N°</th><th>Client</th><th>Type</th><th class="r">Avanc.</th><th class="r">HT</th><th class="r">TTC</th><th class="r">RG</th><th class="r">Net à payer</th><th>Statut</th><th></th></tr></thead><tbody>
-    ${list.length ? list.map((f) => `<tr><td class="mono">${f.numero || f.id}</td><td>${f.client || ""}</td><td><span class="pill">${f.type}</span></td><td class="r">${f.avancement ? f.avancement + " %" : ""}</td><td class="r mono">${fmt(f.montant_ht)}</td><td class="r mono">${fmt(f.montant_ttc)}</td><td class="r mono">${fmt(f.retenue_garantie)}</td><td class="r mono">${fmt(f.net_a_payer || f.montant_ttc)}</td><td><span class="pill">${f.statut}</span></td><td class="r"><button class="btn sm danger" onclick="delFacture(${f.id})">×</button></td></tr>`).join("") : `<tr><td colspan="10" class="muted">Aucune facture.</td></tr>`}
+    ${list.length ? list.map((f) => `<tr><td class="mono">${f.numero || f.id}</td><td>${f.client || ""}</td><td><span class="pill">${f.type}</span></td><td class="r">${f.avancement ? f.avancement + " %" : ""}</td><td class="r mono">${fmt(f.montant_ht)}</td><td class="r mono">${fmt(f.montant_ttc)}</td><td class="r mono">${fmt(f.retenue_garantie)}</td><td class="r mono">${fmt(f.net_a_payer || f.montant_ttc)}</td><td><span class="pill">${f.statut}</span></td><td class="r"><button class="btn sm ghost" onclick="downloadDoc('/api/factures/${f.id}/pdf','${f.type === "situation" ? "situation" : "facture"}-${f.numero || f.id}.pdf')">📄 PDF</button> <button class="btn sm danger" onclick="delFacture(${f.id})">×</button></td></tr>`).join("") : `<tr><td colspan="10" class="muted">Aucune facture.</td></tr>`}
     </tbody></table></div>`;
 }
 async function situationFrom(devisId) {
@@ -957,6 +958,62 @@ async function addMod(key) {
   try { await api(m.ep, { method: "POST", body: JSON.stringify(d) }); if (m.cache) clearCache(m.cache); renderMod(key); } catch (e) { alert(e.message); }
 }
 async function delMod(key, id) { const m = MOD[key]; if (confirm("Supprimer ?")) { await api(`${m.ep}/${id}`, { method: "DELETE" }); if (m.cache) clearCache(m.cache); renderMod(key); } }
+
+/* ===================== Ma société (en-tête des documents) ===================== */
+let _logoData = null;
+async function renderSociete() {
+  const c = await api("/api/companies/" + activeCompany);
+  _logoData = c.logo || null;
+  const f = (k, lbl, val) => `<div class="field"><label>${lbl}</label><input data-k="${k}" value="${(val ?? "").toString().replace(/"/g, "&quot;")}"></div>`;
+  V().innerHTML = `<div class="bar"><div><h1>Ma société</h1><div class="sub">Ces informations apparaissent en en-tête de vos devis et factures.</div></div>
+    <button class="btn" onclick="saveSociete()">Enregistrer</button></div>
+    <div class="card" style="margin-bottom:14px"><div class="colhead">Logo</div>
+      <div style="display:flex;align-items:center;gap:18px">
+        <div style="width:130px;height:64px;border:1px dashed #cbd5e1;border-radius:10px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#fbfcfd">
+          <img id="logo-preview" src="${_logoData || ""}" style="max-width:124px;max-height:58px;${_logoData ? "" : "display:none"}"/>
+          <span id="logo-empty" class="muted" style="${_logoData ? "display:none" : ""}">Aucun logo</span>
+        </div>
+        <div><input type="file" accept="image/*" onchange="onLogoPick(this)"><div class="muted" style="font-size:11px;margin-top:4px">PNG ou JPG. Redimensionné automatiquement.</div>
+        ${_logoData ? `<button class="btn sm danger" style="margin-top:6px" onclick="_logoData=null;document.getElementById('logo-preview').style.display='none';document.getElementById('logo-empty').style.display=''">Retirer</button>` : ""}</div>
+      </div></div>
+    <div id="soc-form" class="card"><div class="colhead">Identité &amp; coordonnées</div>
+      <div class="form" style="grid-template-columns:repeat(3,1fr)">
+        ${f("raison_sociale", "Raison sociale", c.raison_sociale)}
+        ${f("ice", "ICE", c.ice)}
+        ${f("rc", "Registre de commerce (RC)", c.rc)}
+        ${f("if_fiscal", "Identifiant fiscal (IF)", c.if_fiscal)}
+        ${f("patente", "Patente", c.patente)}
+        ${f("cnss", "N° CNSS", c.cnss)}
+        ${f("adresse", "Adresse", c.adresse)}
+        ${f("ville", "Ville", c.ville)}
+        ${f("telephone", "Téléphone", c.telephone)}
+        ${f("email", "Email", c.email)}
+        ${f("rib", "RIB", c.rib)}
+        ${f("tva_taux", "Taux TVA (%)", c.tva_taux)}
+      </div></div>`;
+}
+function onLogoPick(input) {
+  const file = input.files[0]; if (!file) return;
+  const r = new FileReader();
+  r.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      const max = 360, sc = Math.min(1, max / img.width);
+      const cv = document.createElement("canvas"); cv.width = Math.round(img.width * sc); cv.height = Math.round(img.height * sc);
+      cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+      _logoData = cv.toDataURL("image/png");
+      const p = el("logo-preview"); p.src = _logoData; p.style.display = ""; el("logo-empty").style.display = "none";
+    };
+    img.src = r.result;
+  };
+  r.readAsDataURL(file);
+}
+async function saveSociete() {
+  const body = {}; document.querySelectorAll("#soc-form [data-k]").forEach((i) => body[i.dataset.k] = i.value);
+  body.logo = _logoData || "";
+  try { await api("/api/companies/" + activeCompany, { method: "PUT", body: JSON.stringify(body) }); await loadCompanies(); alert("Coordonnées de la société enregistrées."); }
+  catch (e) { alert(e.message); }
+}
 
 /* ===================== Intégrations (adaptateurs cadrés) ===================== */
 function renderIntegrations() {

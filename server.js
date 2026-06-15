@@ -120,6 +120,20 @@ app.post("/api/companies", requireAuth, wrap(async (req, res) => {
   const { rows } = await pool.query("INSERT INTO company (raison_sociale,ice) VALUES ($1,$2) RETURNING id,raison_sociale,ice", [raison_sociale, ice || null]);
   res.status(201).json(rows[0]);
 }));
+app.get("/api/companies/:id", requireAuth, wrap(async (req, res) => {
+  const c = (await pool.query("SELECT * FROM company WHERE id=$1", [req.params.id])).rows[0];
+  if (!c) return res.status(404).json({ error: "Introuvable" });
+  res.json(c);
+}));
+app.put("/api/companies/:id", requireAuth, wrap(async (req, res) => {
+  if (req.user.role !== "DIRECTEUR") return res.status(403).json({ error: "Réservé au Directeur" });
+  const cols = ["raison_sociale","ice","adresse","ville","telephone","email","rc","if_fiscal","patente","cnss","rib","logo","tva_taux"]
+    .filter((k) => req.body[k] !== undefined);
+  if (!cols.length) return res.status(400).json({ error: "Aucune donnée" });
+  const set = cols.map((c, i) => `${c}=$${i + 2}`).join(",");
+  const { rows } = await pool.query(`UPDATE company SET ${set} WHERE id=$1 RETURNING *`, [req.params.id, ...cols.map((c) => req.body[c])]);
+  res.json(rows[0]);
+}));
 
 // ── Gestion des utilisateurs (DIRECTEUR uniquement) ──
 app.get("/api/users", requireAuth, wrap(async (_req, res) =>
@@ -833,6 +847,124 @@ app.post("/api/soustraitants/situation", requireAuth, wrap(async (req, res) => {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'a_payer',now()) RETURNING *`,
     [sc.sous_traitant_id, sc.chantier_id, contrat_id, montant, avancement, cumul, rg, net]);
   res.status(201).json(rows[0]);
+}));
+
+// ══════════════ DOCUMENTS PDF (devis, factures) ══════════════
+function logoBuffer(logo) {
+  if (!logo || typeof logo !== "string" || !logo.startsWith("data:")) return null;
+  const b64 = logo.split(",")[1]; if (!b64) return null;
+  try { return Buffer.from(b64, "base64"); } catch { return null; }
+}
+function docLetterhead(doc, co, title, numero, dateStr) {
+  const M = 40, W = 515;
+  // Logo
+  const lb = logoBuffer(co.logo);
+  let lx = M, infoX = M;
+  if (lb) { try { doc.image(lb, M, 40, { fit: [120, 58] }); infoX = M + 134; } catch { /* format non géré */ } }
+  // Coordonnées société
+  doc.fillColor("#15171C").font("Helvetica-Bold").fontSize(15).text(co.raison_sociale || "Société", infoX, 42, { width: 320 });
+  doc.font("Helvetica").fontSize(8.5).fillColor("#5A6473");
+  const lines = [co.adresse, co.ville, [co.telephone, co.email].filter(Boolean).join(" · ")].filter(Boolean);
+  doc.text(lines.join("\n"), infoX, 62, { width: 320 });
+  // Cartouche document (droite)
+  doc.roundedRect(M + W - 168, 40, 168, 64, 6).fill("#15171C");
+  doc.fill("#F5B301").font("Helvetica-Bold").fontSize(15).text(title, M + W - 158, 50, { width: 148, align: "right" });
+  doc.fill("#fff").font("Helvetica").fontSize(9).text("N° " + (numero || "—"), M + W - 158, 72, { width: 148, align: "right" });
+  doc.fillColor("#cbd5e1").fontSize(8.5).text(dateStr, M + W - 158, 86, { width: 148, align: "right" });
+  // Bande hazard
+  doc.rect(M, 116, W, 4).fill("#F5B301");
+  return 132;
+}
+function clientBlock(doc, y, client, extra) {
+  const M = 40;
+  doc.roundedRect(M, y, 250, 56, 6).fillAndStroke("#f7f8fa", "#e3e7ec");
+  doc.fill("#5A6473").font("Helvetica-Bold").fontSize(8).text("CLIENT", M + 12, y + 9);
+  doc.fill("#15171C").font("Helvetica-Bold").fontSize(11).text(client || "—", M + 12, y + 22, { width: 226 });
+  if (extra) { doc.font("Helvetica").fontSize(8.5).fillColor("#5A6473").text(extra, M + 12, y + 38, { width: 226 }); }
+  return y + 72;
+}
+function docTotals(doc, y, rows) {
+  const M = 40, W = 515, bx = M + W - 230;
+  for (const [lbl, val, strong] of rows) {
+    if (strong) { doc.roundedRect(bx, y - 2, 230, 24, 5).fill("#15171C"); doc.fill("#F5B301"); }
+    else doc.fill("#15171C");
+    doc.font(strong ? "Helvetica-Bold" : "Helvetica").fontSize(strong ? 11 : 10);
+    doc.text(lbl, bx + 12, y + (strong ? 3 : 1), { width: 120 });
+    doc.text(moneyFR(val), bx + 120, y + (strong ? 3 : 1), { width: 98, align: "right" });
+    y += strong ? 28 : 18;
+  }
+  return y;
+}
+function docFooter(doc, co, mention) {
+  const M = 40, W = 515;
+  doc.fontSize(8).fillColor("#5A6473").font("Helvetica");
+  if (mention) doc.text(mention, M, 700, { width: W });
+  if (co.rib) doc.text("RIB : " + co.rib, M, 724, { width: W });
+  const legal = ["ICE " + (co.ice || "—"), co.rc ? "RC " + co.rc : null, co.if_fiscal ? "IF " + co.if_fiscal : null, co.patente ? "Patente " + co.patente : null, co.cnss ? "CNSS " + co.cnss : null].filter(Boolean).join("  ·  ");
+  doc.rect(M, 752, W, 0.6).fill("#e3e7ec");
+  doc.fillColor("#8A93A2").fontSize(7.5).text(legal, M, 758, { width: W, align: "center" });
+}
+const getCompany = async (id) => (await pool.query("SELECT * FROM company WHERE id=$1", [id])).rows[0] || { raison_sociale: "Société" };
+
+app.get("/api/devis/:id/pdf", requireAuth, wrap(async (req, res) => {
+  const d = (await pool.query("SELECT * FROM devis WHERE id=$1", [req.params.id])).rows[0];
+  if (!d) return res.status(404).json({ error: "Devis introuvable" });
+  const lignes = (await pool.query("SELECT * FROM devis_ligne WHERE devis_id=$1 ORDER BY id", [d.id])).rows;
+  const co = await getCompany(d.company_id || (await cid(req)));
+  const doc = new PDFDocument({ size: "A4", margin: 40 });
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="devis-${d.numero || d.id}.pdf"`);
+  doc.pipe(res);
+  let y = docLetterhead(doc, co, "DEVIS", d.numero || d.id, new Date(d.created_at || Date.now()).toLocaleDateString("fr-FR"));
+  y = clientBlock(doc, y + 6, d.client, d.objet);
+  // Tableau
+  const M = 40, W = 515; const cols = [M + 8, M + 285, M + 350, M + 430];
+  doc.rect(M, y, W, 22).fill("#15171C");
+  doc.fill("#fff").font("Helvetica-Bold").fontSize(9);
+  doc.text("DÉSIGNATION", cols[0], y + 7); doc.text("QTÉ", cols[1], y + 7, { width: 50, align: "right" });
+  doc.text("P.U. HT", cols[2], y + 7, { width: 70, align: "right" }); doc.text("TOTAL HT", cols[3], y + 7, { width: 75, align: "right" });
+  y += 22;
+  doc.font("Helvetica").fontSize(9).fillColor("#15171C");
+  lignes.forEach((l, i) => {
+    const h = 20; if (i % 2) { doc.rect(M, y, W, h).fill("#f7f8fa"); doc.fillColor("#15171C"); }
+    doc.text(l.designation || "", cols[0], y + 6, { width: 235 });
+    doc.text(String(l.quantite), cols[1], y + 6, { width: 50, align: "right" });
+    doc.text(moneyFR(l.prix_vente).replace(" MAD", ""), cols[2], y + 6, { width: 70, align: "right" });
+    doc.text(moneyFR(l.total).replace(" MAD", ""), cols[3], y + 6, { width: 75, align: "right" });
+    y += h;
+  });
+  doc.rect(M, y, W, 0.6).fill("#e3e7ec"); y += 14;
+  const tva = Number(d.tva), ttc = Number(d.total_ttc);
+  y = docTotals(doc, y, [["Total HT", d.total_ht], ["TVA (20%)", tva], ["TOTAL TTC", ttc, true]]);
+  docFooter(doc, co, `Arrêté le présent devis à la somme de ${moneyFR(ttc)} TTC. Validité 30 jours. Conditions de règlement à convenir.`);
+  doc.end();
+}));
+
+app.get("/api/factures/:id/pdf", requireAuth, wrap(async (req, res) => {
+  const f = (await pool.query("SELECT * FROM facture WHERE id=$1", [req.params.id])).rows[0];
+  if (!f) return res.status(404).json({ error: "Facture introuvable" });
+  const co = await getCompany(f.company_id || (await cid(req)));
+  const isSit = f.type === "situation";
+  const doc = new PDFDocument({ size: "A4", margin: 40 });
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${isSit ? "situation" : "facture"}-${f.numero || f.id}.pdf"`);
+  doc.pipe(res);
+  let y = docLetterhead(doc, co, isSit ? "SITUATION" : "FACTURE", f.numero || f.id, new Date(f.date_emission || Date.now()).toLocaleDateString("fr-FR"));
+  y = clientBlock(doc, y + 6, f.client, isSit && f.avancement ? `Avancement cumulé : ${f.avancement} %` : null);
+  const ht = Number(f.montant_ht), tva = Number(f.tva), ttc = Number(f.montant_ttc), rg = Number(f.retenue_garantie) || 0, net = Number(f.net_a_payer) || ttc;
+  const M = 40, W = 515;
+  doc.rect(M, y, W, 22).fill("#15171C");
+  doc.fill("#fff").font("Helvetica-Bold").fontSize(9).text("DÉSIGNATION", M + 8, y + 7).text("MONTANT HT", M + W - 130, y + 7, { width: 122, align: "right" });
+  y += 22;
+  doc.font("Helvetica").fontSize(9).fillColor("#15171C");
+  const desc = isSit ? `Travaux exécutés — situation à ${f.avancement || 0} % (déduction des situations antérieures)` : "Prestations / travaux";
+  doc.text(desc, M + 8, y + 6, { width: 340 }).text(moneyFR(ht).replace(" MAD", ""), M + W - 130, y + 6, { width: 122, align: "right" });
+  y += 30; doc.rect(M, y, W, 0.6).fill("#e3e7ec"); y += 14;
+  const rows = [["Montant HT", ht], ["TVA (20%)", tva], ["Montant TTC", ttc, true]];
+  if (rg > 0) { rows.push(["Retenue de garantie", -rg]); rows.push(["NET À PAYER", net, true]); }
+  y = docTotals(doc, y, rows);
+  docFooter(doc, co, isSit ? `Net à payer : ${moneyFR(net)}. Retenue de garantie ${f.rg_taux || 0} % conservée.` : `Montant à régler : ${moneyFR(net)}.`);
+  doc.end();
 }));
 
 // ── SPA fallback ──

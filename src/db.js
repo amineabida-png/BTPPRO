@@ -241,6 +241,19 @@ ALTER TABLE evaluation ADD COLUMN IF NOT EXISTS company_id int REFERENCES compan
 -- Unicité de la paie : par société + période (et non plus globale)
 ALTER TABLE payroll_run DROP CONSTRAINT IF EXISTS payroll_run_periode_annee_periode_mois_key;
 CREATE UNIQUE INDEX IF NOT EXISTS payroll_run_company_periode ON payroll_run (company_id, periode_annee, periode_mois);
+
+-- Société : coordonnées et identité pour les documents (devis, factures…)
+ALTER TABLE company ADD COLUMN IF NOT EXISTS adresse text;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS ville text;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS telephone text;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS email text;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS rc text;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS if_fiscal text;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS patente text;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS cnss text;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS rib text;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS logo text;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS tva_taux numeric(5,2) DEFAULT 20;
 `;
 
 async function seedIfEmpty(table, fn) {
@@ -252,7 +265,11 @@ async function initDb() {
   await pool.query(SCHEMA);
 
   await seedIfEmpty("company", () =>
-    pool.query("INSERT INTO company (raison_sociale, ice) VALUES ($1,$2)", ["Atlas Constructions SARL", "001234567000089"]));
+    pool.query(`INSERT INTO company (raison_sociale, ice, adresse, ville, telephone, email, rc, if_fiscal, patente, cnss, rib, tva_taux)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,20)`,
+      ["Atlas Constructions SARL", "001234567000089", "12, Zone Industrielle Sidi Bernoussi", "Casablanca",
+       "+212 522 00 00 00", "contact@atlas-constructions.ma", "123456", "45678901", "33445566", "7788990",
+       "011 780 0000000000000000 12"]));
 
   await seedIfEmpty("app_user", async () => {
     const email = process.env.ADMIN_EMAIL || "admin@btppro.ma";
