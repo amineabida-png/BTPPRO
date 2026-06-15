@@ -611,7 +611,7 @@ function drawDevisModal() {
   const marge = ht - deb, tva = ht * 0.2, ttc = ht + tva;
   const ouvOpts = (id) => `<option value="">— libre —</option>` + ouvragesCache.map((o) => `<option value="${o.id}" ${id == o.id ? "selected" : ""}>${o.code} — ${o.designation}</option>`).join("");
   el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>Nouveau devis</h3>
-    <div class="mform"><div class="field"><label>N°</label><input id="d-num" value="DEV-${Date.now().toString().slice(-5)}"></div>
+    <div class="mform"><div class="field"><label>N° (vide = automatique)</label><input id="d-num" placeholder="Automatique"></div>
       <div class="field"><label>Client</label><input id="d-cli"></div>
       <div class="field" style="grid-column:1/-1"><label>Objet</label><input id="d-obj"></div></div>
     <div class="colhead" style="margin-top:8px">Lignes (déboursé → ×marge → prix de vente)</div>
@@ -1041,7 +1041,28 @@ async function renderSociete() {
         ${f("email", "Email", c.email)}
         ${f("rib", "RIB", c.rib)}
         ${f("tva_taux", "Taux TVA (%)", c.tva_taux)}
-      </div></div>`;
+      </div></div>
+    <div id="soc-num" class="card" style="margin-top:14px"><div class="colhead">Numérotation automatique des documents</div>
+      <div class="muted" style="margin-bottom:10px;font-size:12px">Variables : <b>{AAAA}</b> année · <b>{AA}</b> année sur 2 chiffres · <b>{MM}</b> mois · <b>####</b> compteur (le nombre de # fixe le nombre de chiffres). Le « prochain n° » indique le compteur actuel ; le suivant sera +1.</div>
+      <div class="form" style="grid-template-columns:repeat(2,1fr)">
+        <div class="field"><label>Format des devis</label><input data-n="devis_format" value="${(c.devis_format || "DEV-{AAAA}-{####}").replace(/"/g, "&quot;")}"></div>
+        <div class="field"><label>Format des factures</label><input data-n="facture_format" value="${(c.facture_format || "FAC-{AAAA}-{####}").replace(/"/g, "&quot;")}"></div>
+        <div class="field"><label>Devis déjà émis (compteur)</label><input data-n="devis_compteur" type="number" value="${c.devis_compteur || 0}"></div>
+        <div class="field"><label>Factures déjà émises (compteur)</label><input data-n="facture_compteur" type="number" value="${c.facture_compteur || 0}"></div>
+      </div>
+      <div class="muted" style="margin-top:8px;font-size:12px">Prochain devis : <b id="nx-d">${formatNumeroJS(c.devis_format || "DEV-{AAAA}-{####}", (Number(c.devis_compteur) || 0) + 1)}</b> · Prochaine facture : <b id="nx-f">${formatNumeroJS(c.facture_format || "FAC-{AAAA}-{####}", (Number(c.facture_compteur) || 0) + 1)}</b></div>
+    </div>`;
+  document.querySelectorAll('#soc-num [data-n]').forEach((i) => i.addEventListener("input", refreshNumPreview));
+}
+function formatNumeroJS(fmt, seq) {
+  const d = new Date();
+  let s = String(fmt || "").replace(/\{AAAA\}/g, d.getFullYear()).replace(/\{AA\}/g, String(d.getFullYear()).slice(-2)).replace(/\{MM\}/g, String(d.getMonth() + 1).padStart(2, "0"));
+  return s.replace(/\{?#+\}?/g, (m) => String((Number(seq) || 0)).padStart((m.match(/#/g) || []).length, "0")) || ("N-" + seq);
+}
+function refreshNumPreview() {
+  const g = (k) => document.querySelector(`#soc-num [data-n="${k}"]`).value;
+  el("nx-d").textContent = formatNumeroJS(g("devis_format"), (Number(g("devis_compteur")) || 0) + 1);
+  el("nx-f").textContent = formatNumeroJS(g("facture_format"), (Number(g("facture_compteur")) || 0) + 1);
 }
 function onLogoPick(input) {
   const file = input.files[0]; if (!file) return;
@@ -1061,8 +1082,9 @@ function onLogoPick(input) {
 }
 async function saveSociete() {
   const body = {}; document.querySelectorAll("#soc-form [data-k]").forEach((i) => body[i.dataset.k] = i.value);
+  document.querySelectorAll("#soc-num [data-n]").forEach((i) => body[i.dataset.n] = i.value);
   body.logo = _logoData || "";
-  try { await api("/api/companies/" + activeCompany, { method: "PUT", body: JSON.stringify(body) }); await loadCompanies(); alert("Coordonnées de la société enregistrées."); }
+  try { await api("/api/companies/" + activeCompany, { method: "PUT", body: JSON.stringify(body) }); await loadCompanies(); alert("Paramètres de la société enregistrés."); }
   catch (e) { alert(e.message); }
 }
 

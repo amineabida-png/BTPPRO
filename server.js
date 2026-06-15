@@ -128,7 +128,7 @@ app.get("/api/companies/:id", requireAuth, wrap(async (req, res) => {
 }));
 app.put("/api/companies/:id", requireAuth, wrap(async (req, res) => {
   if (req.user.role !== "DIRECTEUR") return res.status(403).json({ error: "Réservé au Directeur" });
-  const cols = ["raison_sociale","ice","adresse","ville","telephone","email","rc","if_fiscal","patente","cnss","rib","logo","tva_taux"]
+  const cols = ["raison_sociale","ice","adresse","ville","telephone","email","rc","if_fiscal","patente","cnss","rib","logo","tva_taux","devis_format","facture_format","devis_compteur","facture_compteur"]
     .filter((k) => req.body[k] !== undefined);
   if (!cols.length) return res.status(400).json({ error: "Aucune donnée" });
   const set = cols.map((c, i) => `${c}=$${i + 2}`).join(",");
@@ -686,8 +686,27 @@ app.get("/api/devis/:id/full", requireAuth, wrap(async (req, res) => {
   d.lignes = (await pool.query("SELECT * FROM devis_ligne WHERE devis_id=$1 ORDER BY id", [req.params.id])).rows;
   res.json(d);
 }));
+// Numérotation automatique par société (format paramétrable)
+function formatNumero(fmt, seq, date) {
+  const d = date || new Date();
+  let s = String(fmt || "N-{####}")
+    .replace(/\{AAAA\}/g, d.getFullYear())
+    .replace(/\{AA\}/g, String(d.getFullYear()).slice(-2))
+    .replace(/\{MM\}/g, String(d.getMonth() + 1).padStart(2, "0"));
+  s = s.replace(/\{?#+\}?/g, (m) => { const len = (m.match(/#/g) || []).length; return String(seq).padStart(len, "0"); });
+  return s || ("N-" + seq);
+}
+async function nextNumero(q, companyId, kind) {
+  const col = kind === "devis" ? "devis_compteur" : "facture_compteur";
+  const fcol = kind === "devis" ? "devis_format" : "facture_format";
+  const r = (await q.query(`UPDATE company SET ${col}=COALESCE(${col},0)+1 WHERE id=$1 RETURNING ${col} AS seq, ${fcol} AS fmt`, [companyId])).rows[0];
+  if (!r) return formatNumero(null, Date.now() % 10000);
+  return formatNumero(r.fmt, r.seq, new Date());
+}
+
 app.post("/api/devis/deep", requireAuth, wrap(async (req, res) => {
   const { numero, client: cli, chantier_id, objet, lignes = [] } = req.body || {};
+  const company = await cid(req);
   const conn = await pool.connect();
   try {
     await conn.query("BEGIN");
@@ -699,10 +718,11 @@ app.post("/api/devis/deep", requireAuth, wrap(async (req, res) => {
       return { ...l, prix_vente: pv, total: totHT, totDeb };
     });
     const tva = +(ht * 0.2).toFixed(2), ttc = +(ht + tva).toFixed(2), marge = +(ht - debourse).toFixed(2);
+    const numeroFinal = (numero || "").trim() || await nextNumero(conn, company, "devis");
     const d = (await conn.query(
       `INSERT INTO devis (numero,client,chantier_id,objet,total_debourse,total_marge,total_ht,tva,total_ttc,company_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-      [numero || null, cli || null, chantier_id || null, objet || null, debourse.toFixed(2), marge, ht.toFixed(2), tva, ttc, await cid(req)])).rows[0];
+      [numeroFinal, cli || null, chantier_id || null, objet || null, debourse.toFixed(2), marge, ht.toFixed(2), tva, ttc, company])).rows[0];
     for (const l of calc)
       await conn.query(
         `INSERT INTO devis_ligne (devis_id,ouvrage_id,designation,quantite,debourse_unitaire,coef_marge,prix_unitaire,prix_vente,total)
@@ -725,12 +745,13 @@ app.post("/api/factures/situation", requireAuth, wrap(async (req, res) => {
   if (montant_ht <= 0) return res.status(400).json({ error: "Avancement ≤ au déjà facturé" });
   const tva = +(montant_ht * 0.2).toFixed(2), ttc = +(montant_ht + tva).toFixed(2);
   const rg = +(montant_ht * rg_taux / 100).toFixed(2), net = +(ttc - rg).toFixed(2);
-  const num = `SIT-${devis_id}-${Date.now().toString().slice(-4)}`;
+  const company = await cid(req);
+  const num = await nextNumero(pool, company, "facture");
   const f = (await pool.query(
     `INSERT INTO facture (numero,client,chantier_id,devis_id,type,avancement,cumul_anterieur,
        montant_ht,tva,montant_ttc,rg_taux,retenue_garantie,net_a_payer,statut,company_id)
      VALUES ($1,$2,$3,$4,'situation',$5,$6,$7,$8,$9,$10,$11,$12,'emise',$13) RETURNING *`,
-    [num, d.client, d.chantier_id, devis_id, avancement, cumul, montant_ht, tva, ttc, rg_taux, rg, net, await cid(req)])).rows[0];
+    [num, d.client, d.chantier_id, devis_id, avancement, cumul, montant_ht, tva, ttc, rg_taux, rg, net, company])).rows[0];
   res.status(201).json(f);
 }));
 

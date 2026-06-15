@@ -254,6 +254,10 @@ ALTER TABLE company ADD COLUMN IF NOT EXISTS cnss text;
 ALTER TABLE company ADD COLUMN IF NOT EXISTS rib text;
 ALTER TABLE company ADD COLUMN IF NOT EXISTS logo text;
 ALTER TABLE company ADD COLUMN IF NOT EXISTS tva_taux numeric(5,2) DEFAULT 20;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS devis_format text DEFAULT 'DEV-{AAAA}-{####}';
+ALTER TABLE company ADD COLUMN IF NOT EXISTS facture_format text DEFAULT 'FAC-{AAAA}-{####}';
+ALTER TABLE company ADD COLUMN IF NOT EXISTS devis_compteur int DEFAULT 0;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS facture_compteur int DEFAULT 0;
 `;
 
 async function seedIfEmpty(table, fn) {
