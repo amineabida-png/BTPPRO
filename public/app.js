@@ -135,32 +135,65 @@ async function loadPerms() {
 
 /* ===================== Navigation ===================== */
 document.querySelectorAll(".nav").forEach((b) => (b.onclick = () => show(b.dataset.view)));
+const ROUTES = {
+  dash: renderDash, rentabilite: renderRentabilite, users: renderUsers, emps: renderEmps,
+  organigramme: renderOrganigramme, paie: renderPaie, conges: renderConges, runs: renderRuns,
+  ouvrages: renderOuvrages, devis: renderDevis, factures: renderFactures, articles: renderStock,
+  "bons-commande": renderCommandes, chantiers: renderChantiers, incidents: renderSecurite,
+  documents: renderGED, fournisseurs: renderFournisseurs, "sous-traitants": renderSousTraitants,
+  integrations: renderIntegrations,
+};
 async function show(v) {
   if (!allowed(VIEW_DOMAIN[v])) { V().innerHTML = `<div class="warn">⛔ Accès non autorisé pour votre rôle.</div>`; return; }
   document.querySelectorAll(".nav").forEach((n) => n.classList.toggle("active", n.dataset.view === v));
   window.scrollTo(0, 0);
   try {
-    if (v === "dash") return renderDash();
-    if (v === "rentabilite") return renderRentabilite();
-    if (v === "users") return renderUsers();
-    if (v === "emps") return renderEmps();
-    if (v === "organigramme") return renderOrganigramme();
-    if (v === "paie") return renderPaie();
-    if (v === "conges") return renderConges();
-    if (v === "runs") return renderRuns();
-    if (v === "ouvrages") return renderOuvrages();
-    if (v === "devis") return renderDevis();
-    if (v === "factures") return renderFactures();
-    if (v === "articles") return renderStock();
-    if (v === "bons-commande") return renderCommandes();
-    if (v === "chantiers") return renderChantiers();
-    if (v === "incidents") return renderSecurite();
-    if (v === "documents") return renderGED();
-    if (v === "fournisseurs") return renderFournisseurs();
-    if (v === "sous-traitants") return renderSousTraitants();
-    if (v === "integrations") return renderIntegrations();
-    return renderMod(v);
+    const fn = ROUTES[v] || (() => renderMod(v));
+    await fn();
+    enhanceView();
   } catch (err) { V().innerHTML = `<div class="warn">⚠️ ${err.message}</div>`; }
+}
+
+/* Recherche + tri automatiques sur toutes les listes */
+function enhanceView() {
+  V().querySelectorAll(".card table").forEach((table) => {
+    const tbody = table.querySelector("tbody"); if (!tbody) return;
+    const dataRows = () => [...tbody.rows].filter((r) => !r.querySelector("td[colspan]"));
+    const toNum = (s) => { const t = s.replace(/(MAD|%|\s)/g, "").trim(); return /^-?\d+([.,]\d+)?$/.test(t) ? parseFloat(t.replace(",", ".")) : null; };
+    // Tri en cliquant sur les colonnes
+    const ths = [...table.querySelectorAll("thead th")];
+    ths.forEach((th, i) => {
+      if (!th.textContent.trim() || th.dataset.sortable) return;
+      th.dataset.sortable = "1"; th.style.cursor = "pointer"; th.title = "Trier par cette colonne";
+      th.addEventListener("click", () => {
+        const dir = th.dataset.dir === "asc" ? "desc" : "asc";
+        ths.forEach((t) => { t.dataset.dir = ""; const c = t.querySelector(".sort-caret"); if (c) c.remove(); });
+        th.dataset.dir = dir;
+        const rows = dataRows();
+        rows.sort((a, b) => {
+          const x = (a.cells[i]?.textContent || "").trim(), y = (b.cells[i]?.textContent || "").trim();
+          const nx = toNum(x), ny = toNum(y);
+          const r = (nx !== null && ny !== null) ? nx - ny : x.localeCompare(y, "fr", { numeric: true });
+          return dir === "asc" ? r : -r;
+        });
+        rows.forEach((r) => tbody.appendChild(r));
+        const car = document.createElement("span"); car.className = "sort-caret"; car.textContent = dir === "asc" ? " ▲" : " ▼"; th.appendChild(car);
+      });
+    });
+    // Recherche (si liste assez longue)
+    if (dataRows().length < 6) return;
+    const card = table.closest(".card"); if (!card || card.dataset.searchable) return;
+    card.dataset.searchable = "1";
+    const wrap = document.createElement("div"); wrap.className = "tsearch";
+    wrap.innerHTML = `<input placeholder="🔎  Rechercher dans la liste…"><span class="tcount"></span>`;
+    card.insertBefore(wrap, card.firstChild);
+    const input = wrap.querySelector("input"), count = wrap.querySelector(".tcount");
+    input.addEventListener("input", () => {
+      const q = input.value.toLowerCase().trim(); let n = 0;
+      dataRows().forEach((r) => { const m = r.textContent.toLowerCase().includes(q); r.style.display = m ? "" : "none"; if (m) n++; });
+      count.textContent = q ? `${n} résultat${n > 1 ? "s" : ""}` : "";
+    });
+  });
 }
 
 /* ===================== Modale générique ===================== */
@@ -943,4 +976,6 @@ function renderIntegrations() {
 }
 
 /* ===================== Démarrage ===================== */
+// Réapplique recherche + tri après chaque rendu (y compris re-rendus internes)
+new MutationObserver(() => enhanceView()).observe(el("view"), { childList: true, subtree: true });
 if (token && me) enterApp();

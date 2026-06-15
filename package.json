@@ -4,7 +4,9 @@
   "private": true,
   "description": "BTPPro Maroc — gestion de paie conforme 2026 (Node + PostgreSQL)",
   "type": "commonjs",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js"
