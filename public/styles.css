@@ -187,11 +187,26 @@ ul.org ul li::before{content:"";position:absolute;left:-13px;top:20px;width:11px
 }
 @media(max-width:480px){ .kpis,.tiles{grid-template-columns:1fr} }
 
-/* ---- Recherche & tri des listes ---- */
-.tsearch{display:flex;align-items:center;gap:12px;margin-bottom:14px}
-.tsearch input{flex:1;max-width:360px;border:1.5px solid #d5dbe2;border-radius:9px;padding:9px 13px;font-size:13.5px;font-family:inherit;background:#fbfcfd}
-.tsearch input:focus{outline:0;border-color:var(--hazard);box-shadow:0 0 0 3px rgba(245,179,1,.16);background:#fff}
-.tcount{font-size:12px;color:var(--steel);font-weight:600}
+/* ---- Barre d'outils des listes (recherche + export) ---- */
+.ltools{display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.ltools .tsearch-input{flex:0 1 320px;border:1.5px solid #d5dbe2;border-radius:9px;padding:9px 13px;font-size:13.5px;font-family:inherit;background:#fbfcfd}
+.ltools .tsearch-input:focus{outline:0;border-color:var(--hazard);box-shadow:0 0 0 3px rgba(245,179,1,.16);background:#fff}
+.ltools .tcount{font-size:12px;color:var(--steel);font-weight:600}
+.ltools .lspacer{flex:1}
+.ltools .xbtn{font-size:12.5px;padding:6px 11px}
 thead th[data-sortable]{user-select:none;transition:color .1s}
 thead th[data-sortable]:hover{color:var(--asphalt)}
 .sort-caret{color:var(--hazard);font-size:9px;font-weight:700}
+
+/* ---- Impression ---- */
+@media print{
+  .side,#modal-root,.ltools,.btn,.link{display:none!important}
+  .app{display:block}
+  .main{padding:0;max-width:none;margin:0}
+  .card{box-shadow:none;border:1px solid #ccc;break-inside:avoid}
+  .hero{background:#15171C!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  table{font-size:11px}
+  thead th{background:#f0f0f0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  tr.row:hover{background:none}
+  @page{margin:1.2cm}
+}

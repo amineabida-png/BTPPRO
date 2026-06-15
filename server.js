@@ -6,6 +6,7 @@ const bcrypt = require("bcryptjs");
 const PDFDocument = require("pdfkit");
 const { authenticator } = require("otplib");
 const QRCode = require("qrcode");
+const ExcelJS = require("exceljs");
 
 const { pool, initDb } = require("./src/db");
 const { calculatePayroll, SETTINGS } = require("./src/payroll");
@@ -965,6 +966,33 @@ app.get("/api/factures/:id/pdf", requireAuth, wrap(async (req, res) => {
   y = docTotals(doc, y, rows);
   docFooter(doc, co, isSit ? `Net à payer : ${moneyFR(net)}. Retenue de garantie ${f.rg_taux || 0} % conservée.` : `Montant à régler : ${moneyFR(net)}.`);
   doc.end();
+}));
+
+// ══════════════ EXPORT EXCEL (générique) ══════════════
+app.post("/api/export/xlsx", requireAuth, wrap(async (req, res) => {
+  const { title = "Export", headers = [], rows = [] } = req.body || {};
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "BTPPro"; wb.created = new Date();
+  const ws = wb.addWorksheet((title || "Export").replace(/[\\\/\?\*\[\]:]/g, " ").slice(0, 30) || "Export");
+  ws.addRow(headers);
+  const hr = ws.getRow(1);
+  hr.font = { bold: true, color: { argb: "FF1A1300" } };
+  hr.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF5B301" } };
+  hr.alignment = { vertical: "middle" }; hr.height = 20;
+  const isNum = (s) => { const t = String(s).replace(/\s/g, "").replace(/(MAD|%)/g, "").replace(",", "."); return /^-?\d+(\.\d+)?$/.test(t) ? parseFloat(t) : null; };
+  for (const r of rows) {
+    ws.addRow((r || []).map((c) => { const n = isNum(c); return n !== null ? n : (c == null ? "" : String(c)); }));
+  }
+  (ws.columns || []).forEach((col, i) => {
+    let max = String(headers[i] || "").length;
+    rows.forEach((r) => { const v = r && r[i] != null ? String(r[i]) : ""; if (v.length > max) max = v.length; });
+    col.width = Math.min(46, Math.max(10, max + 2));
+  });
+  ws.views = [{ state: "frozen", ySplit: 1 }];
+  if (headers.length) ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: headers.length } };
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="${(title || "export").replace(/[^\w-]+/g, "_")}.xlsx"`);
+  await wb.xlsx.write(res); res.end();
 }));
 
 // ── SPA fallback ──

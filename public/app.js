@@ -180,20 +180,57 @@ function enhanceView() {
         const car = document.createElement("span"); car.className = "sort-caret"; car.textContent = dir === "asc" ? " ▲" : " ▼"; th.appendChild(car);
       });
     });
-    // Recherche (si liste assez longue)
-    if (dataRows().length < 6) return;
-    const card = table.closest(".card"); if (!card || card.dataset.searchable) return;
-    card.dataset.searchable = "1";
-    const wrap = document.createElement("div"); wrap.className = "tsearch";
-    wrap.innerHTML = `<input placeholder="🔎  Rechercher dans la liste…"><span class="tcount"></span>`;
-    card.insertBefore(wrap, card.firstChild);
-    const input = wrap.querySelector("input"), count = wrap.querySelector(".tcount");
-    input.addEventListener("input", () => {
-      const q = input.value.toLowerCase().trim(); let n = 0;
-      dataRows().forEach((r) => { const m = r.textContent.toLowerCase().includes(q); r.style.display = m ? "" : "none"; if (m) n++; });
-      count.textContent = q ? `${n} résultat${n > 1 ? "s" : ""}` : "";
-    });
+    // Barre d'outils : recherche + export + impression
+    const card = table.closest(".card"); if (!card || card.dataset.tooled) return;
+    card.dataset.tooled = "1";
+    const title = (V().querySelector("h1")?.textContent || "Liste").trim();
+    const big = dataRows().length >= 6;
+    const bar = document.createElement("div"); bar.className = "ltools";
+    bar.innerHTML = `${big ? `<input class="tsearch-input" placeholder="🔎  Rechercher…"><span class="tcount"></span>` : ""}<span class="lspacer"></span>
+      <button class="btn sm ghost xbtn" data-x="xlsx">⬇️ Excel</button>
+      <button class="btn sm ghost xbtn" data-x="csv">⬇️ CSV</button>
+      <button class="btn sm ghost xbtn" data-x="print">🖨️ Imprimer</button>`;
+    card.insertBefore(bar, card.firstChild);
+    bar.querySelector('[data-x="xlsx"]').onclick = () => exportXLSX(table, title);
+    bar.querySelector('[data-x="csv"]').onclick = () => exportCSV(table, title);
+    bar.querySelector('[data-x="print"]').onclick = () => window.print();
+    const input = bar.querySelector(".tsearch-input");
+    if (input) {
+      const count = bar.querySelector(".tcount");
+      input.addEventListener("input", () => {
+        const q = input.value.toLowerCase().trim(); let n = 0;
+        dataRows().forEach((r) => { const m = r.textContent.toLowerCase().includes(q); r.style.display = m ? "" : "none"; if (m) n++; });
+        count.textContent = q ? `${n} résultat${n > 1 ? "s" : ""}` : "";
+      });
+    }
   });
+}
+
+/* Extraction + export des listes */
+function extractTable(table) {
+  const ths = [...table.querySelectorAll("thead th")];
+  const keep = ths.map((th) => th.textContent.trim() !== "");
+  const headers = ths.filter((_, i) => keep[i]).map((th) => th.textContent.trim());
+  const rows = [...table.querySelectorAll("tbody tr")].filter((tr) => !tr.querySelector("td[colspan]"))
+    .map((tr) => [...tr.cells].filter((_, i) => keep[i]).map((td) => td.textContent.trim().replace(/\s+/g, " ")));
+  return { headers, rows };
+}
+function exportCSV(table, title) {
+  const { headers, rows } = extractTable(table);
+  const esc = (v) => `"${String(v).replace(/"/g, '""')}"`;
+  const csv = [headers.map(esc).join(";"), ...rows.map((r) => r.map(esc).join(";"))].join("\r\n");
+  const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob); const a = document.createElement("a");
+  a.href = url; a.download = (title || "liste").replace(/[^\w-]+/g, "_") + ".csv"; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+}
+async function exportXLSX(table, title) {
+  const { headers, rows } = extractTable(table);
+  try {
+    const res = await fetch("/api/export/xlsx", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token, "X-Company-Id": activeCompany || "" }, body: JSON.stringify({ title, headers, rows }) });
+    if (!res.ok) { alert("Erreur lors de l'export Excel"); return; }
+    const blob = await res.blob(); const url = URL.createObjectURL(blob); const a = document.createElement("a");
+    a.href = url; a.download = (title || "liste").replace(/[^\w-]+/g, "_") + ".xlsx"; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  } catch (e) { alert(e.message); }
 }
 
 /* ===================== Modale générique ===================== */
