@@ -1,0 +1,946 @@
+/* ===================== État & utilitaires ===================== */
+let token = localStorage.getItem("btp_token") || null;
+let me = JSON.parse(localStorage.getItem("btp_user") || "null");
+let selected = null;
+const now = new Date();
+const period = { mois: now.getMonth() + 1, annee: now.getFullYear() };
+const MOIS = ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+const fmt = (n) => (Number(n) || 0).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const el = (id) => document.getElementById(id);
+const V = () => el("view");
+const opt = (arr) => arr.map((v) => ({ value: v, label: v.replace(/_/g, " ") }));
+const caches = {};
+
+let activeCompany = localStorage.getItem("btp_company") || null;
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}), ...(activeCompany ? { "X-Company-Id": activeCompany } : {}), ...(opts.headers || {}) } });
+  if (res.status === 401) { logout(); throw new Error("Session expirée"); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Erreur");
+  return data;
+}
+async function getCache(rel) {
+  if (caches[rel]) return caches[rel];
+  caches[rel] = await api("/api/" + rel);
+  return caches[rel];
+}
+function clearCache(rel) { delete caches[rel]; }
+function chantierLabel(id) { const c = (caches.chantiers || []).find((x) => x.id == id); return c ? c.code : (id || ""); }
+function relLabel(rel, id, key) { const o = (caches[rel] || []).find((x) => x.id == id); return o ? o[key] : (id || ""); }
+
+/* ===================== Auth ===================== */
+let pending2FA = null;
+el("login-form").addEventListener("submit", async (e) => {
+  e.preventDefault(); el("login-err").textContent = "";
+  const email = el("email").value, password = el("password").value;
+  const codeField = el("twofa-code");
+  const body = { email, password };
+  if (pending2FA && codeField) body.code = codeField.value;
+  try {
+    const d = await api("/api/auth/login", { method: "POST", body: JSON.stringify(body) });
+    if (d.require_2fa) {
+      pending2FA = { email, password };
+      el("login-err").textContent = "Entrez le code de votre application d'authentification.";
+      if (!el("twofa-code")) {
+        const inp = document.createElement("input");
+        inp.id = "twofa-code"; inp.placeholder = "Code à 6 chiffres"; inp.inputMode = "numeric";
+        inp.style = "margin-top:8px"; el("login-form").insertBefore(inp, el("login-err"));
+      }
+      return;
+    }
+    token = d.token; me = d.user;
+    localStorage.setItem("btp_token", token); localStorage.setItem("btp_user", JSON.stringify(me));
+    pending2FA = null; if (el("twofa-code")) el("twofa-code").remove();
+    enterApp();
+  } catch (err) { el("login-err").textContent = err.message; }
+});
+el("logout").addEventListener("click", logout);
+function logout() { token = null; me = null; activeCompany = null; localStorage.clear(); el("app").classList.add("hide"); el("login").classList.remove("hide"); }
+function enterApp() { el("login").classList.add("hide"); el("app").classList.remove("hide"); el("who").textContent = me ? (me.name || me.email) : ""; loadCompanies().then(loadPerms); }
+
+/* ===================== Multi-société ===================== */
+async function loadCompanies() {
+  try {
+    const cos = await api("/api/companies");
+    window._companies = cos;
+    if (!activeCompany || !cos.find((c) => String(c.id) === String(activeCompany))) {
+      activeCompany = cos.length ? String(cos[0].id) : null;
+      if (activeCompany) localStorage.setItem("btp_company", activeCompany);
+    }
+    const sel = el("company-switch");
+    if (sel) {
+      sel.innerHTML = cos.map((c) => `<option value="${c.id}" ${String(c.id) === String(activeCompany) ? "selected" : ""}>${c.raison_sociale}</option>`).join("") +
+        (me && me.role === "DIRECTEUR" ? `<option value="__new">+ Nouvelle société…</option>` : "");
+    }
+  } catch { /* ignore */ }
+}
+async function switchCompany(v) {
+  if (v === "__new") {
+    const d = await modalForm("Nouvelle société", [{ key: "raison_sociale", label: "Raison sociale" }, { key: "ice", label: "ICE" }]);
+    if (d) { try { const c = await api("/api/companies", { method: "POST", body: JSON.stringify(d) }); activeCompany = String(c.id); localStorage.setItem("btp_company", activeCompany); } catch (e) { alert(e.message); } }
+    await loadCompanies(); show("dash"); return;
+  }
+  activeCompany = v; localStorage.setItem("btp_company", v);
+  for (const k of Object.keys(caches)) delete caches[k];
+  show("dash");
+}
+
+/* ===================== 2FA ===================== */
+async function open2FA() {
+  const st = await api("/api/2fa/status");
+  if (st.totp_enabled) {
+    el("modal-root").innerHTML = `<div class="overlay"><div class="modal"><h3>Authentification à deux facteurs</h3>
+      <p class="sub">La 2FA est <b>activée</b> sur votre compte.</p>
+      <div class="mform"><div class="field"><label>Code actuel pour désactiver</label><input id="dis-code" placeholder="6 chiffres"></div></div>
+      <div class="mactions"><button class="btn ghost" onclick="el('modal-root').innerHTML=''">Fermer</button><button class="btn danger" onclick="disable2FA()">Désactiver</button></div></div></div>`;
+    return;
+  }
+  const s = await api("/api/2fa/setup", { method: "POST", body: "{}" });
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal"><h3>Activer la 2FA</h3>
+    <p class="sub">Scannez ce QR code avec Google Authenticator / Authy, puis saisissez le code.</p>
+    <div style="text-align:center"><img src="${s.qr}" alt="QR 2FA" style="width:180px;height:180px"/></div>
+    <p class="muted" style="font-size:11px;word-break:break-all">Clé manuelle : ${s.secret}</p>
+    <div class="mform"><div class="field"><label>Code de vérification</label><input id="act-code" placeholder="6 chiffres"></div></div>
+    <div class="mactions"><button class="btn ghost" onclick="el('modal-root').innerHTML=''">Annuler</button><button class="btn" onclick="activate2FA()">Activer</button></div></div></div>`;
+}
+async function activate2FA() {
+  try { await api("/api/2fa/activate", { method: "POST", body: JSON.stringify({ code: el("act-code").value }) }); el("modal-root").innerHTML = ""; alert("2FA activée. Elle sera demandée à la prochaine connexion."); }
+  catch (e) { alert(e.message); }
+}
+async function disable2FA() {
+  try { await api("/api/2fa/disable", { method: "POST", body: JSON.stringify({ code: el("dis-code").value }) }); el("modal-root").innerHTML = ""; alert("2FA désactivée."); }
+  catch (e) { alert(e.message); }
+}
+
+const VIEW_DOMAIN = {
+  dash: "dashboard", rentabilite: "rentabilite", emps: "rh", organigramme: "rh", paie: "paie", conges: "conges", runs: "paie",
+  chantiers: "chantiers", incidents: "securite", documents: "ged", ouvrages: "devis", devis: "devis", factures: "facturation",
+  articles: "stock", "demandes-achat": "achats", "bons-commande": "achats", fournisseurs: "tiers", "sous-traitants": "tiers",
+  integrations: null, users: "admin",
+};
+let myPerms = ["*"];
+function allowed(domain) { return domain == null || myPerms.includes("*") || myPerms.includes(domain); }
+async function loadPerms() {
+  try {
+    const m = await api("/api/me");
+    myPerms = m.permissions || ["*"];
+    if (m.user) el("role-badge").textContent = m.user.role;
+  } catch { myPerms = ["*"]; }
+  document.querySelectorAll(".nav").forEach((b) => { b.style.display = allowed(VIEW_DOMAIN[b.dataset.view]) ? "" : "none"; });
+  // Aller à la première vue autorisée
+  const first = [...document.querySelectorAll(".nav")].find((b) => b.style.display !== "none");
+  show(first ? first.dataset.view : "dash");
+}
+
+/* ===================== Navigation ===================== */
+document.querySelectorAll(".nav").forEach((b) => (b.onclick = () => show(b.dataset.view)));
+async function show(v) {
+  if (!allowed(VIEW_DOMAIN[v])) { V().innerHTML = `<div class="warn">⛔ Accès non autorisé pour votre rôle.</div>`; return; }
+  document.querySelectorAll(".nav").forEach((n) => n.classList.toggle("active", n.dataset.view === v));
+  window.scrollTo(0, 0);
+  try {
+    if (v === "dash") return renderDash();
+    if (v === "rentabilite") return renderRentabilite();
+    if (v === "users") return renderUsers();
+    if (v === "emps") return renderEmps();
+    if (v === "organigramme") return renderOrganigramme();
+    if (v === "paie") return renderPaie();
+    if (v === "conges") return renderConges();
+    if (v === "runs") return renderRuns();
+    if (v === "ouvrages") return renderOuvrages();
+    if (v === "devis") return renderDevis();
+    if (v === "factures") return renderFactures();
+    if (v === "articles") return renderStock();
+    if (v === "bons-commande") return renderCommandes();
+    if (v === "chantiers") return renderChantiers();
+    if (v === "incidents") return renderSecurite();
+    if (v === "documents") return renderGED();
+    if (v === "fournisseurs") return renderFournisseurs();
+    if (v === "sous-traitants") return renderSousTraitants();
+    if (v === "integrations") return renderIntegrations();
+    return renderMod(v);
+  } catch (err) { V().innerHTML = `<div class="warn">⚠️ ${err.message}</div>`; }
+}
+
+/* ===================== Modale générique ===================== */
+function modalForm(title, fields, initial = {}) {
+  return new Promise(async (resolve) => {
+    for (const f of fields) if (f.rel) f.options = (await getCache(f.rel)).map((o) => ({ value: o.id, label: o.code ? `${o.code} — ${o.nom}` : (o.raison_sociale || o.designation || o.matricule + " " + o.nom || o.id) }));
+    const inputs = fields.map((f) => {
+      const val = initial[f.key] ?? "";
+      if (f.type === "select") return `<div class="field"><label>${f.label}</label><select data-k="${f.key}">${(f.options || []).map((o) => `<option value="${o.value}" ${val == o.value ? "selected" : ""}>${o.label}</option>`).join("")}</select></div>`;
+      return `<div class="field"><label>${f.label}</label><input data-k="${f.key}" type="${f.type || "text"}" value="${val}"></div>`;
+    }).join("");
+    el("modal-root").innerHTML = `<div class="overlay"><div class="modal"><h3>${title}</h3><div class="mform">${inputs}</div>
+      <div class="mactions"><button class="btn ghost" id="m-cancel">Annuler</button><button class="btn" id="m-ok">Enregistrer</button></div></div></div>`;
+    const close = (r) => { el("modal-root").innerHTML = ""; resolve(r); };
+    el("m-cancel").onclick = () => close(null);
+    el("m-ok").onclick = () => {
+      const out = {}; document.querySelectorAll("#modal-root [data-k]").forEach((i) => { if (i.value !== "") out[i.dataset.k] = i.value; });
+      close(out);
+    };
+  });
+}
+
+/* ===================== Tableau de bord ===================== */
+function companyName() { const c = (window._companies || []).find((x) => String(x.id) === String(activeCompany)); return c ? c.raison_sociale : "Société"; }
+async function renderDash() {
+  const d = await api("/api/dashboard");
+  const card = (lbl, val, unit, cls, ic) => `<div class="card kpi ${cls || ""}"><span class="ic">${ic || ""}</span><div class="lbl">${lbl}</div><div class="val mono">${val} <small>${unit || ""}</small></div></div>`;
+  const money = [
+    card("Effectif", d.effectif, "", "flat", "👷"),
+    card("Masse salariale brute", fmt(d.masse_brute), "MAD", "", "💰"),
+    card("Net à payer", fmt(d.net_total), "MAD", "ok", "🧾"),
+    card("Coût employeur", fmt(d.cout_total), "MAD", "", "🏛️"),
+  ];
+  const op = [
+    card("Chantiers actifs", d.chantiers_actifs, "", "flat", "🏗️"),
+    card("Devis en cours", d.devis_en_cours, "", "flat", "📝"),
+    card("CA facturé", fmt(d.ca_facture), "MAD", "ok", "💶"),
+    card("Congés en attente", d.conges_attente, "", d.conges_attente > 0 ? "warn" : "flat", "🌴"),
+    card("Alertes stock", d.stock_alertes, "", d.stock_alertes > 0 ? "alert" : "ok", "📦"),
+    card("Incidents ouverts", d.incidents_ouverts, "", d.incidents_ouverts > 0 ? "alert" : "ok", "⛑️"),
+  ];
+  // Structure de la masse salariale (mini-barres)
+  const maxv = Math.max(d.cout_total, d.masse_brute, d.net_total, 1);
+  const bar = (lbl, v, color) => `<div class="mrow"><div class="ml">${lbl}</div><div class="mtrack"><div class="mfill" style="width:${(v / maxv * 100).toFixed(1)}%;background:${color}">${fmt(v)}</div></div></div>`;
+  const tile = (v, ic, tt, ts) => `<button class="tile" onclick="show('${v}')"><span class="ti">${ic}</span><span class="tt">${tt}</span><span class="ts">${ts}</span></button>`;
+
+  V().innerHTML = `
+    <div class="hero"><div class="co">${companyName()}</div><h1>Tableau de bord</h1>
+      <div class="per">Exercice ${period.annee} · ${MOIS[period.mois - 1]}</div></div>
+    <div class="grid kpis">${money.join("")}</div>
+    <div class="grid kpis" style="margin-top:14px">${op.join("")}</div>
+    <div class="card" style="margin-top:18px"><div class="colhead">Structure de la masse salariale (mensuelle)</div>
+      <div class="mbars">
+        ${bar("Brut imposable", d.masse_brute, "var(--steel)")}
+        ${bar("Net à payer", d.net_total, "var(--green)")}
+        ${bar("Coût employeur", d.cout_total, "var(--hazard)")}
+      </div>
+      <div class="muted" style="margin-top:10px;font-size:12px">Charges patronales ≈ ${fmt(d.cout_total - d.masse_brute)} MAD · soit ${d.masse_brute > 0 ? Math.round((d.cout_total - d.masse_brute) / d.masse_brute * 100) : 0} % du brut</div>
+    </div>
+    <div style="margin-top:18px"><div class="colhead">Accès rapides</div>
+      <div class="tiles">
+        ${tile("paie", "🧾", "Lancer la paie", "Générer les bulletins du mois")}
+        ${tile("devis", "📝", "Nouveau devis", "Déboursé, marge, prix de vente")}
+        ${tile("chantiers", "🏗️", "Chantiers", "Budget réel vs prévu")}
+        ${tile("rentabilite", "📈", "Rentabilité", "Marge par chantier")}
+      </div>
+    </div>`;
+}
+
+/* ===================== Rentabilité ===================== */
+async function renderRentabilite() {
+  const d = await api("/api/dashboard/rentabilite");
+  const g = d.global;
+  const kpis = [
+    ["CA facturé (HT)", fmt(g.ca_facture), "MAD"],
+    ["Marge brute chantiers", fmt(g.marge_brute_chantiers), "MAD", g.marge_brute_chantiers >= 0],
+    ["Coût réel chantiers", fmt(g.total_cout_reel), "MAD"],
+    ["Masse salariale brute", fmt(g.masse_brute), "MAD"],
+    ["Coût employeur", fmt(g.cout_employeur), "MAD"],
+    ["Marge prévue (devis)", fmt(g.marge_devis), "MAD"],
+    ["Valeur du stock", fmt(g.valeur_stock), "MAD"],
+    ["Budget chantiers prévu", fmt(g.total_budget_prevu), "MAD"],
+  ];
+  // Graphique CA vs coût réel par chantier (barres CSS)
+  const max = Math.max(1, ...d.chantiers.map((c) => Math.max(c.ca_facture, c.cout_reel)));
+  const bars = d.chantiers.map((c) => `
+    <div class="chrow">
+      <div class="chlbl">${c.code}<div class="muted" style="font-size:11px">${c.nom}</div></div>
+      <div class="chbars">
+        <div class="chbar"><div class="fill ca" style="width:${(c.ca_facture / max * 100).toFixed(1)}%"></div><span class="chval mono">CA ${fmt(c.ca_facture)}</span></div>
+        <div class="chbar"><div class="fill cost" style="width:${(c.cout_reel / max * 100).toFixed(1)}%"></div><span class="chval mono">Coût ${fmt(c.cout_reel)}</span></div>
+      </div>
+    </div>`).join("");
+
+  V().innerHTML = `<h1>Rentabilité</h1><div class="sub">Consolidation : devis, chantiers, paie, facturation, stock.</div>
+    <div class="grid kpis" style="grid-template-columns:repeat(4,1fr)">
+      ${kpis.map(([l, v, u, pos]) => `<div class="card kpi"><div class="lbl">${l}</div><div class="val mono" ${pos === false ? 'style="color:var(--rose)"' : pos === true ? 'style="color:var(--green)"' : ""}>${v} <small>${u}</small></div></div>`).join("")}
+    </div>
+    <div class="card" style="margin-top:16px"><div class="colhead">CA facturé vs coût réel par chantier</div>
+      ${d.chantiers.length ? `<div class="chart">${bars}</div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px"><span><span class="dot ca"></span> CA facturé</span><span><span class="dot cost"></span> Coût réel</span></div>` : `<div class="muted">Aucun chantier.</div>`}
+    </div>
+    <div class="card" style="margin-top:16px"><div class="colhead">Rentabilité par chantier</div>
+      <table><thead><tr><th>Code</th><th>Nom</th><th>Statut</th><th class="r">Budget prévu</th><th class="r">Coût réel</th><th class="r">CA facturé</th><th class="r">Marge</th><th class="r">Taux</th></tr></thead><tbody>
+      ${d.chantiers.map((c) => `<tr><td class="mono">${c.code}</td><td class="row" onclick="budgetChantier2('${c.code}')">${c.nom}</td><td><span class="pill">${c.statut}</span></td><td class="r mono">${fmt(c.budget_prevu)}</td><td class="r mono">${fmt(c.cout_reel)}</td><td class="r mono">${fmt(c.ca_facture)}</td><td class="r mono ${c.marge < 0 ? "neg" : ""}" style="${c.marge >= 0 ? "color:var(--green)" : ""}">${fmt(c.marge)}</td><td class="r mono">${c.taux_marge == null ? "—" : c.taux_marge + " %"}</td></tr>`).join("")}
+      </tbody></table>
+    </div>
+    <p class="muted" style="margin-top:10px">Marge brute chantier = CA facturé − coût réel (main d'œuvre allouée + matériaux reçus + sous-traitance + dépenses directes). Indicatif.</p>`;
+}
+async function budgetChantier2(code) { if (!caches.chantiers) caches.chantiers = await api("/api/chantiers"); const c = caches.chantiers.find((x) => x.code === code); if (c) budgetChantier(c.id); }
+
+async function renderEmps() {
+  const emps = await api("/api/employees"); caches.employees = emps;
+  if (!selected && emps.length) selected = emps[0].id;
+  V().innerHTML = `<div class="bar"><div><h1>Salariés</h1><div class="sub">Fiche complète, contrats, paie. Le contrat actif pilote le salaire.</div></div>
+    <button class="btn sm" onclick="addEmp()">+ Ajouter</button></div>
+    <div class="card"><table><thead><tr><th>Matricule</th><th>Salarié</th><th>Poste</th><th>Contrat</th><th class="r">Ancienneté</th><th class="r">Salaire</th><th class="r">Net</th><th></th></tr></thead><tbody>
+    ${emps.map((e) => { const a = Math.floor(e.mois_anciennete / 12); return `<tr><td class="mono">${e.matricule}</td><td class="row" onclick="fiche(${e.id})">${e.nom}</td><td><span class="pill">${e.poste || ""}</span></td><td>${e.contrat_type ? `<span class="pill">${e.contrat_type}</span>` : ""}</td><td class="r">${a} an${a > 1 ? "s" : ""}</td><td class="r mono">${fmt(e.salaire_effectif || e.salaire_base)}</td><td class="r mono">${fmt(e.paie.netAPayer)}</td>
+      <td class="r"><button class="btn sm" onclick="fiche(${e.id})">Fiche</button> <button class="btn sm ghost" onclick="goPaie(${e.id})">Paie</button> <button class="btn sm danger" onclick="delEmp(${e.id})">×</button></td></tr>`; }).join("")}
+    </tbody></table></div>`;
+}
+async function addEmp() {
+  const d = await modalForm("Nouveau salarié", [
+    { key: "matricule", label: "Matricule" }, { key: "nom", label: "Nom complet" }, { key: "poste", label: "Poste" }, { key: "cin", label: "CIN" },
+    { key: "salaire_base", label: "Salaire de base", type: "number" }, { key: "mois_anciennete", label: "Ancienneté (mois)", type: "number" }, { key: "personnes_charge", label: "Personnes à charge", type: "number" }]);
+  if (!d) return;
+  try { await api("/api/employees", { method: "POST", body: JSON.stringify(d) }); renderEmps(); } catch (e) { alert(e.message); }
+}
+async function delEmp(id) { if (confirm("Désactiver ce salarié ?")) { await api("/api/employees/" + id, { method: "DELETE" }); renderEmps(); } }
+function goPaie(id) { selected = id; show("paie"); }
+
+/* ===================== Fiche salarié ===================== */
+async function fiche(id) {
+  const f = await api("/api/employees/" + id + "/fiche");
+  const ca = f.contrat_actif;
+  const note = (n) => "★".repeat(n) + "☆".repeat(5 - n);
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>${f.nom} <span class="pill">${f.matricule}</span></h3>
+    <div class="sub">${f.poste || ""}${f.manager ? " · N+1 : " + f.manager.nom : ""}${f.cin ? " · CIN " + f.cin : ""}</div>
+    <div class="grid kpis" style="grid-template-columns:repeat(3,1fr);margin:10px 0">
+      <div class="card kpi"><div class="lbl">Contrat actif</div><div class="val" style="font-size:18px">${ca ? ca.type : "—"}</div></div>
+      <div class="card kpi"><div class="lbl">Salaire (contrat)</div><div class="val mono" style="font-size:18px">${fmt(ca ? ca.salaire_base : f.salaire_base)}</div></div>
+      <div class="card kpi"><div class="lbl">Net à payer</div><div class="val mono" style="font-size:18px">${fmt(f.paie.netAPayer)}</div></div>
+    </div>
+    <div class="bar"><div class="colhead">Contrats (historique)</div><button class="btn sm" onclick="addContrat(${f.id})">+ Avenant / contrat</button></div>
+    <table class="lines"><thead><tr><th>Type</th><th>Poste</th><th class="r">Salaire</th><th>Début</th><th>Fin</th><th>Actif</th></tr></thead><tbody>
+    ${f.contrats.map((c) => `<tr><td><span class="pill">${c.type}</span></td><td>${c.poste || ""}</td><td class="r mono">${fmt(c.salaire_base)}</td><td>${(c.date_debut || "").slice(0, 10)}</td><td>${(c.date_fin || "").slice(0, 10)}</td><td>${c.actif ? "✅" : ""}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">Aucun contrat.</td></tr>`}
+    </tbody></table>
+    <div class="colhead" style="margin-top:12px">Affectations chantiers</div>
+    <table class="lines"><tbody>${f.affectations.map((a) => `<tr><td>${a.chantier_code} — ${a.chantier_nom}</td><td>${a.role || ""}</td><td>${(a.date_debut || "").slice(0, 10)} → ${(a.date_fin || "en cours").slice(0, 10)}</td></tr>`).join("") || `<tr><td class="muted">Aucune.</td></tr>`}</tbody></table>
+    <div class="bar" style="margin-top:12px"><div class="colhead">Évaluations</div><button class="btn sm ghost" onclick="addEval(${f.id})">+ Évaluation</button></div>
+    <table class="lines"><tbody>${f.evaluations.map((e) => `<tr><td>${(e.date_eval || "").slice(0, 10)}</td><td>${note(e.note || 0)}</td><td>${e.evaluateur || ""}</td><td>${e.commentaire || ""}</td></tr>`).join("") || `<tr><td class="muted">Aucune évaluation.</td></tr>`}</tbody></table>
+    <div class="mactions"><button class="btn" onclick="el('modal-root').innerHTML=''">Fermer</button></div></div></div>`;
+}
+async function addContrat(id) {
+  const d = await modalForm("Nouveau contrat / avenant", [
+    { key: "type", label: "Type", type: "select", options: opt(["CDI", "CDD", "essai", "anapec", "interim"]) },
+    { key: "poste", label: "Poste" }, { key: "salaire_base", label: "Salaire de base", type: "number" },
+    { key: "date_debut", label: "Date de début", type: "date" }, { key: "date_fin", label: "Date de fin (CDD)", type: "date" }]);
+  if (!d) return;
+  await api(`/api/employees/${id}/contrats`, { method: "POST", body: JSON.stringify(d) });
+  clearCache("employees"); fiche(id);
+}
+async function addEval(id) {
+  const d = await modalForm("Nouvelle évaluation", [
+    { key: "note", label: "Note (1 à 5)", type: "number" }, { key: "evaluateur", label: "Évaluateur" }, { key: "commentaire", label: "Commentaire" }]);
+  if (!d) return; d.employee_id = id; await api("/api/evaluations", { method: "POST", body: JSON.stringify(d) }); fiche(id);
+}
+
+/* ===================== Organigramme ===================== */
+function orgNode(n) {
+  return `<li><div class="org-card"><b>${n.nom}</b><div class="muted">${n.poste || ""} · ${n.matricule}</div></div>${n.equipe && n.equipe.length ? `<ul>${n.equipe.map(orgNode).join("")}</ul>` : ""}</li>`;
+}
+async function renderOrganigramme() {
+  const tree = await api("/api/organigramme");
+  V().innerHTML = `<h1>Organigramme</h1><div class="sub">Hiérarchie des équipes (N+1).</div>
+    <div class="card"><ul class="org">${tree.map(orgNode).join("")}</ul></div>`;
+}
+
+/* ===================== Paie / bulletin ===================== */
+async function renderPaie() {
+  const emps = await api("/api/employees"); caches.employees = emps;
+  const e = emps.find((x) => x.id === selected) || emps[0];
+  if (!e) { V().innerHTML = "<h1>Paie</h1><div class='sub'>Aucun salarié.</div>"; return; }
+  const c = await api("/api/payroll/preview", { method: "POST", body: JSON.stringify({ salaireBase: Number(e.salaire_base), moisAnciennete: e.mois_anciennete, personnesCharge: e.personnes_charge }) });
+  const fpTaux = c.fraisProTaux === 0.35 ? "35 %" : "25 %", trLbl = c.trancheIR === 0 ? "exonéré" : "tranche " + Math.round(c.trancheIR * 100) + " %";
+  const pick = emps.map((x) => `<option value="${x.id}" ${x.id === e.id ? "selected" : ""}>${x.matricule} — ${x.nom}</option>`).join("");
+  V().innerHTML = `<div class="bar"><div><h1>Bulletin de paie</h1><div class="sub">${MOIS[period.mois - 1]} ${period.annee}</div></div>
+    <div style="display:flex;gap:8px;align-items:center"><select id="emp-pick" onchange="selected=Number(this.value);renderPaie()">${pick}</select>
+    <button class="btn sm" onclick="genRun()">Générer la paie du mois</button></div></div>
+    <div class="sheet">
+      <div class="sheet-head"><div><div style="font-weight:600">🏢 Atlas Constructions SARL</div><div class="t">Bulletin — ${MOIS[period.mois - 1]} ${period.annee}</div></div>
+        <div style="text-align:right"><div style="font-weight:600">${e.nom}</div><div class="t mono">${e.matricule} · ${e.poste || ""}</div></div></div>
+      <div class="cols">
+        <div><div class="colhead">Gains</div>
+          ${line("Salaire de base", fmt(c.salaireBase / 191) + " MAD/h · 191 h", c.salaireBase)}
+          ${line("Prime d'ancienneté", c.tauxAnciennete > 0 ? Math.round(c.tauxAnciennete * 100) + " % · Art. 350" : "aucune (< 2 ans)", c.primeAnciennete)}
+          ${line("Brut imposable", "", c.brutImposable, false, true)}</div>
+        <div><div class="colhead">Retenues salarié</div>
+          ${line("CNSS prestations", "4,48 % · plafond 6 000", c.cnssPrestations, true)}
+          ${line("AMO", "2,26 % · sans plafond", c.amo, true)}
+          ${line("Frais professionnels", fpTaux + " · abattement IR", c.fraisPro, true)}
+          ${line("Revenu net imposable", "", c.revenuNetImposable, false, true)}
+          ${line("IR (" + trLbl + ")", c.deductionsFamiliales > 0 ? "− " + fmt(c.deductionsFamiliales) + " charges famille" : "barème 2026", c.ir, true)}</div>
+      </div>
+      <div class="net"><div><div class="lbl">Net à payer</div></div><div class="fig mono">${fmt(c.netAPayer)} <span style="font-size:15px">MAD</span></div></div>
+      <div class="emp"><div class="colhead">Charges patronales (≈ 21,09 %)</div>
+        <div class="cols" style="padding:0;gap:0 36px">
+          <div>${line("Prestations", "8,98 %", c.cotisationsEmployeur.prestations)}${line("Allocations familiales", "6,40 %", c.cotisationsEmployeur.allocations)}</div>
+          <div>${line("AMO employeur", "4,11 %", c.cotisationsEmployeur.amo)}${line("Taxe formation", "1,60 %", c.cotisationsEmployeur.tfp)}</div></div>
+        ${line("Coût total employeur", "", c.coutTotal, false, true)}</div>
+    </div>
+    ${(c.warnings || []).map((w) => `<div class="warn">⚠️ <span>${w}</span></div>`).join("")}
+    <div style="margin-top:14px;text-align:right"><button class="btn ghost" onclick="window.print()">🖨️ Imprimer</button></div>`;
+}
+function line(lbl, basis, amt, neg, strong) {
+  return `<div class="line${strong ? " strong" : ""}"><div><div>${lbl}</div>${basis ? `<div class="lbasis">${basis}</div>` : ""}</div><div class="mono${neg ? " neg" : ""}">${neg ? "− " : ""}${fmt(amt)}</div></div>`;
+}
+async function genRun() {
+  try { const r = await api("/api/payroll/runs", { method: "POST", body: JSON.stringify(period) }); alert(`Paie générée : ${r.bulletins} bulletins · net total ${fmt(r.run.total_net)} MAD.`); show("runs"); }
+  catch (e) { alert(e.message); }
+}
+async function renderRuns() {
+  const runs = await api("/api/payroll/runs");
+  V().innerHTML = `<h1>Historique des paies</h1><div class="sub">Lots générés et archivés. Ouvre un lot pour télécharger les bulletins PDF.</div>
+    <div class="card"><table><thead><tr><th>Période</th><th>Statut</th><th class="r">Brut</th><th class="r">Net</th><th class="r">Coût employeur</th><th></th></tr></thead><tbody>
+    ${runs.length ? runs.map((r) => `<tr><td class="row" onclick="runDetail(${r.id},'${MOIS[r.periode_mois - 1]} ${r.periode_annee}')">${MOIS[r.periode_mois - 1]} ${r.periode_annee}</td><td><span class="pill">${r.statut}</span></td><td class="r mono">${fmt(r.total_brut)}</td><td class="r mono">${fmt(r.total_net)}</td><td class="r mono">${fmt(r.total_cout)}</td><td class="r"><button class="btn sm" onclick="runDetail(${r.id},'${MOIS[r.periode_mois - 1]} ${r.periode_annee}')">Bulletins</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucune paie générée.</td></tr>`}
+    </tbody></table></div>`;
+}
+async function runDetail(runId, label) {
+  const ps = await api(`/api/payroll/runs/${runId}/payslips`);
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>Bulletins — ${label}</h3>
+    <table class="lines"><thead><tr><th>Matricule</th><th>Salarié</th><th class="r">Net à payer</th><th></th></tr></thead><tbody>
+    ${ps.map((p) => `<tr><td class="mono">${p.matricule}</td><td>${p.nom}</td><td class="r mono">${fmt(p.net)}</td><td class="r"><button class="btn sm" onclick="downloadPdf(${p.id},'${p.matricule}')">📄 PDF</button></td></tr>`).join("")}
+    </tbody></table>
+    <div class="mactions"><button class="btn" onclick="el('modal-root').innerHTML=''">Fermer</button></div></div></div>`;
+}
+async function downloadPdf(id, mat) {
+  try {
+    const res = await fetch(`/api/payslips/${id}/pdf`, { headers: { Authorization: "Bearer " + token } });
+    if (!res.ok) { alert("Erreur lors de la génération du PDF"); return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = `bulletin-${mat}.pdf`; document.body.appendChild(a); a.click();
+    a.remove(); URL.revokeObjectURL(url);
+  } catch (e) { alert(e.message); }
+}
+
+/* ===================== Utilisateurs (RBAC) ===================== */
+async function renderUsers() {
+  const [users, me2] = await Promise.all([api("/api/users"), api("/api/me")]);
+  const roles = me2.roles || ["DIRECTEUR", "RH", "COMPTABLE", "CHEF_CHANTIER", "OUVRIER"];
+  window._roles = roles;
+  V().innerHTML = `<div class="bar"><div><h1>Utilisateurs</h1><div class="sub">Gestion des accès par rôle (RBAC).</div></div>
+    <button class="btn sm" onclick="addUser()">+ Utilisateur</button></div>
+    <div class="card"><table><thead><tr><th>Email</th><th>Nom</th><th>Rôle</th><th></th></tr></thead><tbody>
+    ${users.map((u) => `<tr><td>${u.email}</td><td>${u.full_name || ""}</td><td><span class="pill">${u.role}</span></td><td class="r">${u.id === me.id ? '<span class="muted">vous</span>' : `<button class="btn sm danger" onclick="delUser(${u.id})">×</button>`}</td></tr>`).join("")}
+    </tbody></table></div>
+    <div class="card" style="margin-top:14px"><div class="colhead">Droits par rôle</div>
+      <table class="lines"><tbody>
+        <tr><td><b>DIRECTEUR</b></td><td>Tout</td></tr>
+        <tr><td><b>RH</b></td><td>RH, Paie, Congés, Tableau de bord</td></tr>
+        <tr><td><b>COMPTABLE</b></td><td>Devis, Facturation, Achats, Tiers, Stock, Rentabilité</td></tr>
+        <tr><td><b>CHEF_CHANTIER</b></td><td>Chantiers, Sécurité, GED, Stock</td></tr>
+        <tr><td><b>OUVRIER</b></td><td>Tableau de bord (consultation)</td></tr>
+      </tbody></table></div>`;
+}
+async function addUser() {
+  const d = await modalForm("Nouvel utilisateur", [
+    { key: "email", label: "Email" }, { key: "full_name", label: "Nom complet" },
+    { key: "password", label: "Mot de passe", type: "text" },
+    { key: "role", label: "Rôle", type: "select", options: (window._roles || ["DIRECTEUR", "RH", "COMPTABLE", "CHEF_CHANTIER", "OUVRIER"]).map((r) => ({ value: r, label: r })) }]);
+  if (!d) return;
+  try { await api("/api/users", { method: "POST", body: JSON.stringify(d) }); renderUsers(); } catch (e) { alert(e.message); }
+}
+async function delUser(id) { if (confirm("Supprimer cet utilisateur ?")) { try { await api("/api/users/" + id, { method: "DELETE" }); renderUsers(); } catch (e) { alert(e.message); } } }
+
+
+/* ===================== Congés ===================== */
+async function renderConges() {
+  const [list, soldes] = await Promise.all([api("/api/conges"), api("/api/conges/soldes")]);
+  if (!caches.employees) caches.employees = await api("/api/employees");
+  V().innerHTML = `<div class="bar"><div><h1>Congés</h1><div class="sub">Acquisition 1,5 j/mois (Art. 231). Validation hiérarchique + soldes.</div></div>
+    <button class="btn sm" onclick="addConge()">+ Demande</button></div>
+    <div class="card" style="margin-bottom:14px"><div class="colhead">Soldes congés annuels</div>
+      <table><thead><tr><th>Matricule</th><th>Salarié</th><th class="r">Acquis</th><th class="r">Pris</th><th class="r">Solde</th></tr></thead><tbody>
+      ${soldes.map((s) => `<tr><td class="mono">${s.matricule}</td><td>${s.nom}</td><td class="r mono">${s.acquis}</td><td class="r mono">${s.pris}</td><td class="r mono ${s.solde < 0 ? "neg" : ""}">${s.solde}</td></tr>`).join("")}
+      </tbody></table></div>
+    <div class="card"><table><thead><tr><th>Salarié</th><th>Type</th><th>Du</th><th>Au</th><th class="r">Jours</th><th>Statut</th><th></th></tr></thead><tbody>
+    ${list.length ? list.map((c) => `<tr><td>${relLabel("employees", c.employee_id, "nom")}</td><td><span class="pill">${c.type}</span></td><td>${c.date_debut || ""}</td><td>${c.date_fin || ""}</td><td class="r mono">${c.jours || ""}</td><td><span class="pill">${c.statut}</span></td>
+      <td class="r">${c.statut === "demande" ? `<button class="btn sm" onclick="setConge(${c.id},'valide')">Valider</button> <button class="btn sm danger" onclick="setConge(${c.id},'refuse')">Refuser</button>` : ""}</td></tr>`).join("") : `<tr><td colspan="7" class="muted">Aucune demande.</td></tr>`}
+    </tbody></table></div>`;
+}
+async function addConge() {
+  const d = await modalForm("Nouvelle demande de congé", [
+    { key: "employee_id", label: "Salarié", type: "select", rel: "employees" },
+    { key: "type", label: "Type", type: "select", options: opt(["annuel", "maladie", "maternite", "paternite", "exceptionnel"]) },
+    { key: "date_debut", label: "Du", type: "date" }, { key: "date_fin", label: "Au", type: "date" },
+    { key: "jours", label: "Jours", type: "number" }, { key: "motif", label: "Motif" }]);
+  if (!d) return; await api("/api/conges", { method: "POST", body: JSON.stringify(d) }); renderConges();
+}
+async function setConge(id, statut) { await api(`/api/conges/${id}/statut`, { method: "POST", body: JSON.stringify({ statut }) }); renderConges(); }
+
+/* ===================== Bibliothèque d'ouvrages (sous-détails de prix) ===================== */
+async function renderOuvrages() {
+  const list = await api("/api/ouvrages");
+  V().innerHTML = `<div class="bar"><div><h1>Bibliothèque de prix</h1><div class="sub">Ouvrages et sous-détails (déboursé sec : main d'œuvre + matériaux + matériel).</div></div>
+    <button class="btn sm" onclick="addOuvrage()">+ Ouvrage</button></div>
+    <div class="card"><table><thead><tr><th>Code</th><th>Désignation</th><th>Unité</th><th class="r">Déboursé sec</th><th></th></tr></thead><tbody>
+    ${list.map((o) => `<tr><td class="mono">${o.code}</td><td class="row" onclick="viewOuvrage(${o.id})">${o.designation}</td><td>${o.unite}</td><td class="r mono">${fmt(o.debourse_sec)}</td><td class="r"><button class="btn sm" onclick="viewOuvrage(${o.id})">Détail</button> <button class="btn sm danger" onclick="delOuvrage(${o.id})">×</button></td></tr>`).join("")}
+    </tbody></table></div>`;
+}
+async function viewOuvrage(id) {
+  const o = await api("/api/ouvrages/" + id);
+  const T = { main_oeuvre: "Main d'œuvre", materiau: "Matériau", materiel: "Matériel" };
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>${o.code} — ${o.designation}</h3>
+    <div class="sub">Sous-détail de prix · unité : ${o.unite}</div>
+    <table class="lines"><thead><tr><th>Type</th><th>Désignation</th><th class="r">Qté</th><th class="r">P.U.</th><th class="r">Montant</th></tr></thead><tbody>
+    ${o.composants.map((c) => `<tr><td><span class="pill">${T[c.type] || c.type}</span></td><td>${c.designation}</td><td class="r mono">${c.quantite}</td><td class="r mono">${fmt(c.prix_unitaire)}</td><td class="r mono">${fmt(Number(c.quantite) * Number(c.prix_unitaire))}</td></tr>`).join("")}
+    </tbody></table>
+    <div class="totaux"><div><b>Déboursé sec <span class="mono">${fmt(o.debourse_sec)} MAD/${o.unite}</span></b></div></div>
+    <div class="mactions"><button class="btn" onclick="el('modal-root').innerHTML=''">Fermer</button></div></div></div>`;
+}
+async function addOuvrage() {
+  const h = await modalForm("Nouvel ouvrage", [{ key: "code", label: "Code" }, { key: "designation", label: "Désignation" }, { key: "unite", label: "Unité" }]);
+  if (!h) return;
+  const o = await api("/api/ouvrages", { method: "POST", body: JSON.stringify(h) });
+  // ajouter des composants
+  let more = true;
+  while (more) {
+    const c = await modalForm("Composant de " + o.code + " (Annuler pour terminer)", [
+      { key: "type", label: "Type", type: "select", options: opt(["main_oeuvre", "materiau", "materiel"]) },
+      { key: "designation", label: "Désignation" }, { key: "unite", label: "Unité" },
+      { key: "quantite", label: "Quantité", type: "number" }, { key: "prix_unitaire", label: "Prix unitaire", type: "number" }]);
+    if (!c) more = false; else await api(`/api/ouvrages/${o.id}/composants`, { method: "POST", body: JSON.stringify(c) });
+  }
+  renderOuvrages();
+}
+async function delOuvrage(id) { if (confirm("Supprimer cet ouvrage ?")) { await api("/api/ouvrages/" + id, { method: "DELETE" }); renderOuvrages(); } }
+
+/* ===================== Devis (déboursé → marge → prix de vente) ===================== */
+let devisLignes = [];
+let ouvragesCache = [];
+async function renderDevis() {
+  const list = await api("/api/devis");
+  V().innerHTML = `<div class="bar"><div><h1>Devis</h1><div class="sub">Déboursé sec · coefficient de marge · prix de vente · TVA 20 %.</div></div>
+    <button class="btn sm" onclick="newDevis()">+ Nouveau devis</button></div>
+    <div class="card"><table><thead><tr><th>N°</th><th>Client</th><th>Objet</th><th class="r">Déboursé</th><th class="r">Marge</th><th class="r">TTC</th><th></th></tr></thead><tbody>
+    ${list.length ? list.map((d) => `<tr><td class="mono">${d.numero || d.id}</td><td>${d.client || ""}</td><td>${d.objet || ""}</td><td class="r mono">${fmt(d.total_debourse)}</td><td class="r mono">${fmt(d.total_marge)}</td><td class="r mono">${fmt(d.total_ttc)}</td><td class="r"><button class="btn sm" onclick="situationFrom(${d.id})">Situation</button> <button class="btn sm danger" onclick="delDevis(${d.id})">×</button></td></tr>`).join("") : `<tr><td colspan="7" class="muted">Aucun devis.</td></tr>`}
+    </tbody></table></div>`;
+}
+async function newDevis() {
+  ouvragesCache = await api("/api/ouvrages");
+  devisLignes = [{ ouvrage_id: "", designation: "", quantite: 1, debourse_unitaire: 0, coef_marge: 1.2 }];
+  drawDevisModal();
+}
+function ligneCalc(l) {
+  const du = Number(l.debourse_unitaire) || 0, coef = Number(l.coef_marge) || 1, q = Number(l.quantite) || 0;
+  const pv = du * coef; return { pv, pvTotal: pv * q, debTotal: du * q };
+}
+function drawDevisModal() {
+  let deb = 0, ht = 0;
+  devisLignes.forEach((l) => { const c = ligneCalc(l); deb += c.debTotal; ht += c.pvTotal; });
+  const marge = ht - deb, tva = ht * 0.2, ttc = ht + tva;
+  const ouvOpts = (id) => `<option value="">— libre —</option>` + ouvragesCache.map((o) => `<option value="${o.id}" ${id == o.id ? "selected" : ""}>${o.code} — ${o.designation}</option>`).join("");
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>Nouveau devis</h3>
+    <div class="mform"><div class="field"><label>N°</label><input id="d-num" value="DEV-${Date.now().toString().slice(-5)}"></div>
+      <div class="field"><label>Client</label><input id="d-cli"></div>
+      <div class="field" style="grid-column:1/-1"><label>Objet</label><input id="d-obj"></div></div>
+    <div class="colhead" style="margin-top:8px">Lignes (déboursé → ×marge → prix de vente)</div>
+    <table class="lines"><thead><tr><th>Ouvrage</th><th>Désignation</th><th class="r">Qté</th><th class="r">Déboursé U.</th><th class="r">×Marge</th><th class="r">P.V.</th><th class="r">Total HT</th><th></th></tr></thead><tbody>
+    ${devisLignes.map((l, i) => { const c = ligneCalc(l); return `<tr>
+      <td><select style="width:130px" onchange="pickOuvrage(${i},this.value)">${ouvOpts(l.ouvrage_id)}</select></td>
+      <td><input style="width:140px" value="${l.designation}" oninput="updL(${i},'designation',this.value)"></td>
+      <td class="r"><input type="number" style="width:60px" value="${l.quantite}" oninput="updL(${i},'quantite',this.value)"></td>
+      <td class="r"><input type="number" style="width:80px" value="${l.debourse_unitaire}" oninput="updL(${i},'debourse_unitaire',this.value)"></td>
+      <td class="r"><input type="number" step="0.05" style="width:60px" value="${l.coef_marge}" oninput="updL(${i},'coef_marge',this.value)"></td>
+      <td class="r mono">${fmt(c.pv)}</td><td class="r mono">${fmt(c.pvTotal)}</td>
+      <td class="r"><button class="btn sm danger" onclick="rmLigne(${i})">×</button></td></tr>`; }).join("")}
+    </tbody></table>
+    <button class="btn sm ghost" onclick="addLigne()">+ Ligne</button>
+    <div class="totaux"><div>Déboursé <span class="mono">${fmt(deb)}</span></div><div>Marge <span class="mono">${fmt(marge)}</span></div><div>HT <span class="mono">${fmt(ht)}</span></div><div>TVA <span class="mono">${fmt(tva)}</span></div><div><b>TTC <span class="mono">${fmt(ttc)}</span></b></div></div>
+    <div class="mactions"><button class="btn ghost" onclick="el('modal-root').innerHTML=''">Annuler</button><button class="btn" onclick="saveDevis()">Enregistrer</button></div>
+    </div></div>`;
+}
+function updL(i, k, v) { devisLignes[i][k] = v; if (k !== "designation") drawDevisModal(); }
+function pickOuvrage(i, id) {
+  const o = ouvragesCache.find((x) => x.id == id);
+  if (o) { devisLignes[i].ouvrage_id = id; devisLignes[i].designation = o.designation; devisLignes[i].debourse_unitaire = o.debourse_sec; }
+  else devisLignes[i].ouvrage_id = "";
+  drawDevisModal();
+}
+function addLigne() { devisLignes.push({ ouvrage_id: "", designation: "", quantite: 1, debourse_unitaire: 0, coef_marge: 1.2 }); drawDevisModal(); }
+function rmLigne(i) { devisLignes.splice(i, 1); drawDevisModal(); }
+async function saveDevis() {
+  const body = { numero: el("d-num").value, client: el("d-cli").value, objet: el("d-obj").value, lignes: devisLignes };
+  await api("/api/devis/deep", { method: "POST", body: JSON.stringify(body) }); el("modal-root").innerHTML = ""; renderDevis();
+}
+async function delDevis(id) { if (confirm("Supprimer ce devis ?")) { await api("/api/devis/" + id, { method: "DELETE" }); renderDevis(); } }
+
+/* ===================== Facturation (situations + retenue de garantie) ===================== */
+async function renderFactures() {
+  const list = await api("/api/factures");
+  V().innerHTML = `<div class="bar"><div><h1>Factures &amp; situations</h1><div class="sub">Situations de travaux (avancement), retenue de garantie, net à payer.</div></div>
+    <button class="btn sm" onclick="situationFrom()">+ Situation</button></div>
+    <div class="card"><table><thead><tr><th>N°</th><th>Client</th><th>Type</th><th class="r">Avanc.</th><th class="r">HT</th><th class="r">TTC</th><th class="r">RG</th><th class="r">Net à payer</th><th>Statut</th><th></th></tr></thead><tbody>
+    ${list.length ? list.map((f) => `<tr><td class="mono">${f.numero || f.id}</td><td>${f.client || ""}</td><td><span class="pill">${f.type}</span></td><td class="r">${f.avancement ? f.avancement + " %" : ""}</td><td class="r mono">${fmt(f.montant_ht)}</td><td class="r mono">${fmt(f.montant_ttc)}</td><td class="r mono">${fmt(f.retenue_garantie)}</td><td class="r mono">${fmt(f.net_a_payer || f.montant_ttc)}</td><td><span class="pill">${f.statut}</span></td><td class="r"><button class="btn sm danger" onclick="delFacture(${f.id})">×</button></td></tr>`).join("") : `<tr><td colspan="10" class="muted">Aucune facture.</td></tr>`}
+    </tbody></table></div>`;
+}
+async function situationFrom(devisId) {
+  const devs = await api("/api/devis");
+  if (!devs.length) { alert("Crée d'abord un devis."); return; }
+  const d = await modalForm("Nouvelle situation de travaux", [
+    { key: "devis_id", label: "Devis", type: "select", options: devs.map((x) => ({ value: x.id, label: `${x.numero || x.id} — ${x.client || ""} (HT ${fmt(x.total_ht)})` })) },
+    { key: "avancement", label: "Avancement cumulé (%)", type: "number" },
+    { key: "rg_taux", label: "Retenue de garantie (%)", type: "number" }], devisId ? { devis_id: devisId } : {});
+  if (!d) return;
+  try { await api("/api/factures/situation", { method: "POST", body: JSON.stringify(d) }); show("factures"); }
+  catch (e) { alert(e.message); }
+}
+async function delFacture(id) { if (confirm("Supprimer ?")) { await api("/api/factures/" + id, { method: "DELETE" }); renderFactures(); } }
+
+/* ===================== Stock (valorisation CMUP) ===================== */
+async function renderStock() {
+  const v = await api("/api/stock/valorisation");
+  caches.articles = v.articles;
+  V().innerHTML = `<div class="bar"><div><h1>Stock</h1><div class="sub">Valorisation au CMUP (coût moyen unitaire pondéré).</div></div>
+    <div style="display:flex;gap:8px;align-items:center"><div class="pill">Valeur totale : <b class="mono">${fmt(v.total)} MAD</b></div><button class="btn sm" onclick="addArticle()">+ Article</button></div></div>
+    <div class="card"><table><thead><tr><th>Référence</th><th>Désignation</th><th class="r">Stock</th><th class="r">Seuil</th><th class="r">CMUP</th><th class="r">Valeur</th><th></th></tr></thead><tbody>
+    ${v.articles.map((a) => `<tr><td class="mono">${a.reference}</td><td>${a.designation}</td><td class="r mono ${Number(a.stock) < Number(a.seuil) ? "neg" : ""}">${fmt(a.stock)} ${a.unite}</td><td class="r mono">${fmt(a.seuil)}</td><td class="r mono">${fmt(a.cmup)}</td><td class="r mono">${fmt(a.valeur)}</td>
+      <td class="r"><button class="btn sm" onclick="mvtStock(${a.id})">Mouvement</button> <button class="btn sm ghost" onclick="inventaire(${a.id},${a.stock})">Inventaire</button></td></tr>`).join("")}
+    </tbody></table></div>`;
+}
+async function addArticle() {
+  const d = await modalForm("Nouvel article", [{ key: "reference", label: "Référence" }, { key: "designation", label: "Désignation" }, { key: "unite", label: "Unité" }, { key: "stock", label: "Stock initial", type: "number" }, { key: "seuil", label: "Seuil d'alerte", type: "number" }, { key: "prix_unitaire", label: "Prix unitaire (CMUP initial)", type: "number" }]);
+  if (!d) return; if (d.prix_unitaire) d.cmup = d.prix_unitaire; await api("/api/articles", { method: "POST", body: JSON.stringify(d) }); renderStock();
+}
+async function mvtStock(id) {
+  const d = await modalForm("Mouvement de stock", [{ key: "type", label: "Type", type: "select", options: opt(["entree", "sortie"]) }, { key: "quantite", label: "Quantité", type: "number" }, { key: "prix_unitaire", label: "Prix d'achat (si entrée)", type: "number" }, { key: "motif", label: "Motif" }]);
+  if (!d) return; await api("/api/stock/mouvements", { method: "POST", body: JSON.stringify({ article_id: id, ...d }) }); renderStock();
+}
+async function inventaire(id, stockActuel) {
+  const d = await modalForm("Inventaire (stock physique compté)", [{ key: "quantite_comptee", label: `Quantité réelle (théorique : ${stockActuel})`, type: "number" }]);
+  if (!d) return; await api("/api/stock/inventaire", { method: "POST", body: JSON.stringify({ article_id: id, ...d }) }); renderStock();
+}
+
+/* ===================== Achats : commandes + réception ===================== */
+let cmdLignes = [];
+async function renderCommandes() {
+  const list = await api("/api/commandes");
+  V().innerHTML = `<div class="bar"><div><h1>Bons de commande</h1><div class="sub">Réception → entrée en stock automatique (CMUP recalculé).</div></div>
+    <button class="btn sm" onclick="newCommande()">+ Commande</button></div>
+    <div class="card"><table><thead><tr><th>N°</th><th>Fournisseur</th><th>Chantier</th><th class="r">Montant</th><th>Statut</th><th></th></tr></thead><tbody>
+    ${list.length ? list.map((c) => `<tr><td class="mono">${c.numero}</td><td>${c.fournisseur || ""}</td><td>${c.chantier_code || ""}</td><td class="r mono">${fmt(c.montant)}</td><td><span class="pill">${c.statut}</span></td>
+      <td class="r">${c.statut !== "recue" ? `<button class="btn sm" onclick="recevoir(${c.id})">Réceptionner</button> ` : ""}<button class="btn sm danger" onclick="delCommande(${c.id})">×</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucune commande.</td></tr>`}
+    </tbody></table></div>`;
+}
+async function newCommande() {
+  await Promise.all([getCache("fournisseurs"), getCache("chantiers"), getCache("articles")]);
+  if (!caches.articles) caches.articles = await api("/api/articles");
+  cmdLignes = [{ article_id: "", designation: "", quantite: 1, prix_unitaire: 0 }];
+  drawCmdModal();
+}
+function drawCmdModal() {
+  const montant = cmdLignes.reduce((s, l) => s + (Number(l.quantite) || 0) * (Number(l.prix_unitaire) || 0), 0);
+  const fOpts = (caches.fournisseurs || []).map((f) => `<option value="${f.id}">${f.raison_sociale}</option>`).join("");
+  const cOpts = `<option value="">— aucun —</option>` + (caches.chantiers || []).map((c) => `<option value="${c.id}">${c.code} — ${c.nom}</option>`).join("");
+  const aOpts = (id) => `<option value="">— libre —</option>` + (caches.articles || []).map((a) => `<option value="${a.id}" ${id == a.id ? "selected" : ""}>${a.reference} — ${a.designation}</option>`).join("");
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>Nouveau bon de commande</h3>
+    <div class="mform"><div class="field"><label>Fournisseur</label><select id="c-four">${fOpts}</select></div>
+      <div class="field"><label>Chantier</label><select id="c-chan">${cOpts}</select></div></div>
+    <div class="colhead" style="margin-top:8px">Lignes</div>
+    <table class="lines"><thead><tr><th>Article</th><th>Désignation</th><th class="r">Qté</th><th class="r">P.U. achat</th><th class="r">Total</th><th></th></tr></thead><tbody>
+    ${cmdLignes.map((l, i) => `<tr>
+      <td><select style="width:150px" onchange="pickArt(${i},this.value)">${aOpts(l.article_id)}</select></td>
+      <td><input style="width:130px" value="${l.designation}" oninput="updC(${i},'designation',this.value)"></td>
+      <td class="r"><input type="number" style="width:60px" value="${l.quantite}" oninput="updC(${i},'quantite',this.value)"></td>
+      <td class="r"><input type="number" style="width:80px" value="${l.prix_unitaire}" oninput="updC(${i},'prix_unitaire',this.value)"></td>
+      <td class="r mono">${fmt((Number(l.quantite) || 0) * (Number(l.prix_unitaire) || 0))}</td>
+      <td class="r"><button class="btn sm danger" onclick="rmCmd(${i})">×</button></td></tr>`).join("")}
+    </tbody></table>
+    <button class="btn sm ghost" onclick="addCmd()">+ Ligne</button>
+    <div class="totaux"><div><b>Montant <span class="mono">${fmt(montant)}</span></b></div></div>
+    <div class="mactions"><button class="btn ghost" onclick="el('modal-root').innerHTML=''">Annuler</button><button class="btn" onclick="saveCommande()">Enregistrer</button></div>
+    </div></div>`;
+}
+function updC(i, k, v) { cmdLignes[i][k] = v; if (k !== "designation") drawCmdModal(); }
+function pickArt(i, id) { const a = (caches.articles || []).find((x) => x.id == id); if (a) { cmdLignes[i].article_id = id; cmdLignes[i].designation = a.designation; cmdLignes[i].prix_unitaire = a.cmup || a.prix_unitaire; } else cmdLignes[i].article_id = ""; drawCmdModal(); }
+function addCmd() { cmdLignes.push({ article_id: "", designation: "", quantite: 1, prix_unitaire: 0 }); drawCmdModal(); }
+function rmCmd(i) { cmdLignes.splice(i, 1); drawCmdModal(); }
+async function saveCommande() {
+  const body = { fournisseur_id: el("c-four").value || null, chantier_id: el("c-chan").value || null, lignes: cmdLignes };
+  await api("/api/commandes", { method: "POST", body: JSON.stringify(body) }); el("modal-root").innerHTML = ""; renderCommandes();
+}
+async function recevoir(id) { if (confirm("Réceptionner cette commande ? (entrée en stock)")) { await api(`/api/commandes/${id}/reception`, { method: "POST", body: "{}" }); alert("Réceptionnée — stock mis à jour."); renderCommandes(); } }
+async function delCommande(id) { if (confirm("Supprimer ?")) { await api("/api/commandes/" + id, { method: "DELETE" }); renderCommandes(); } }
+
+/* ===================== Chantiers (budget réel vs prévu) ===================== */
+async function renderChantiers() {
+  const list = await api("/api/chantiers"); caches.chantiers = list;
+  V().innerHTML = `<div class="bar"><div><h1>Chantiers</h1><div class="sub">Budget prévu vs réel (main d'œuvre + matériaux + sous-traitance + divers).</div></div>
+    <button class="btn sm" onclick="addChantier()">+ Chantier</button></div>
+    <div class="card"><table><thead><tr><th>Code</th><th>Nom</th><th>Client</th><th>Ville</th><th>Statut</th><th class="r">Budget prévu</th><th></th></tr></thead><tbody>
+    ${list.map((c) => `<tr><td class="mono">${c.code}</td><td>${c.nom}</td><td>${c.client || ""}</td><td>${c.ville || ""}</td><td><span class="pill">${c.statut}</span></td><td class="r mono">${fmt(c.budget_prevu)}</td>
+      <td class="r"><button class="btn sm" onclick="budgetChantier(${c.id})">Budget</button> <button class="btn sm danger" onclick="delChantier(${c.id})">×</button></td></tr>`).join("")}
+    </tbody></table></div>`;
+}
+async function addChantier() {
+  const d = await modalForm("Nouveau chantier", [{ key: "code", label: "Code" }, { key: "nom", label: "Nom" }, { key: "client", label: "Client" }, { key: "ville", label: "Ville" }, { key: "budget_prevu", label: "Budget prévu", type: "number" }, { key: "statut", label: "Statut", type: "select", options: opt(["prospect", "en_cours", "suspendu", "clos"]) }]);
+  if (!d) return; await api("/api/chantiers", { method: "POST", body: JSON.stringify(d) }); clearCache("chantiers"); renderChantiers();
+}
+async function delChantier(id) { if (confirm("Supprimer ?")) { await api("/api/chantiers/" + id, { method: "DELETE" }); clearCache("chantiers"); renderChantiers(); } }
+async function budgetChantier(id) {
+  const b = await api(`/api/chantiers/${id}/budget`);
+  const pct = b.pct_consomme;
+  const barColor = pct == null ? "#475569" : pct > 100 ? "#be123c" : pct > 85 ? "#b45309" : "#047857";
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal"><h3>Budget — ${b.chantier.code} ${b.chantier.nom}</h3>
+    <div class="line strong"><div>Budget prévu</div><div class="mono">${fmt(b.chantier.budget_prevu)}</div></div>
+    <div class="colhead" style="margin-top:10px">Coûts réels</div>
+    <div class="line"><div>Main d'œuvre</div><div class="mono">${fmt(b.detail.main_oeuvre)}</div></div>
+    <div class="line"><div>Matériaux (commandes reçues)</div><div class="mono">${fmt(b.detail.materiaux)}</div></div>
+    <div class="line"><div>Sous-traitance</div><div class="mono">${fmt(b.detail.sous_traitance)}</div></div>
+    <div class="line"><div>Dépenses directes</div><div class="mono">${fmt(b.detail.depenses_directes)}</div></div>
+    <div class="line strong"><div>Total réel</div><div class="mono">${fmt(b.reel)}</div></div>
+    <div class="line strong"><div>Écart</div><div class="mono ${b.ecart < 0 ? "neg" : ""}">${fmt(b.ecart)}</div></div>
+    ${pct != null ? `<div style="margin-top:12px"><div style="font-size:12px;color:var(--slate)">Consommé : ${pct} %</div>
+      <div style="height:10px;background:#e2e8f0;border-radius:6px;overflow:hidden;margin-top:4px"><div style="height:100%;width:${Math.min(pct, 100)}%;background:${barColor}"></div></div></div>` : ""}
+    <div class="mactions"><button class="btn" onclick="el('modal-root').innerHTML=''">Fermer</button></div></div></div>`;
+}
+
+/* ===================== Sécurité chantier (HSE) ===================== */
+async function renderSecurite() {
+  const [stats, incidents, controles, epis] = await Promise.all([
+    api("/api/securite/stats"), api("/api/incidents"), api("/api/controles"), api("/api/epi")]);
+  await getCache("chantiers"); if (!caches.employees) caches.employees = await api("/api/employees");
+  const kpis = [
+    ["Incidents", stats.incidents, ""], ["Accidents", stats.accidents, ""],
+    ["Jours d'arrêt", stats.jours_arret, ""], ["Taux fréquence", stats.taux_frequence, "TF"],
+    ["Taux gravité", stats.taux_gravite, "TG"], ["Conformité contrôles", stats.taux_conformite == null ? "—" : stats.taux_conformite, "%"],
+  ];
+  V().innerHTML = `<h1>Sécurité chantier</h1><div class="sub">Registre HSE, contrôles, EPI et indicateurs (TF = accidents avec arrêt / M heures · TG = jours perdus / 1000 h).</div>
+    <div class="grid kpis" style="grid-template-columns:repeat(6,1fr)">
+      ${kpis.map(([l, v, u]) => `<div class="card kpi"><div class="lbl">${l}</div><div class="val mono" style="font-size:20px">${v} <small>${u}</small></div></div>`).join("")}</div>
+
+    <div class="card" style="margin-top:16px"><div class="bar"><div class="colhead">Registre incidents / accidents</div><button class="btn sm" onclick="addIncident()">+ Déclarer</button></div>
+      <table><thead><tr><th>Date</th><th>Chantier</th><th>Type</th><th>Gravité</th><th>Blessé</th><th class="r">Arrêt (j)</th><th>Statut</th><th></th></tr></thead><tbody>
+      ${incidents.length ? incidents.map((i) => `<tr><td>${(i.date_incident || "").slice(0, 10)}</td><td>${chantierLabel(i.chantier_id)}</td><td><span class="pill">${i.type}</span></td><td><span class="pill">${i.gravite || ""}</span></td><td>${i.employee_id ? relLabel("employees", i.employee_id, "nom") : ""}</td><td class="r mono">${i.jours_arret || 0}</td><td><span class="pill">${i.statut}</span></td><td class="r"><button class="btn sm danger" onclick="delGen('incidents',${i.id},renderSecurite)">×</button></td></tr>`).join("") : `<tr><td colspan="8" class="muted">Aucun.</td></tr>`}
+      </tbody></table></div>
+
+    <div class="card" style="margin-top:16px"><div class="bar"><div class="colhead">Contrôles de sécurité</div><button class="btn sm" onclick="addControle()">+ Contrôle</button></div>
+      <table><thead><tr><th>Date</th><th>Chantier</th><th>Type</th><th>Conforme</th><th>Contrôleur</th><th>Observations</th><th></th></tr></thead><tbody>
+      ${controles.length ? controles.map((c) => `<tr><td>${(c.date_controle || "").slice(0, 10)}</td><td>${chantierLabel(c.chantier_id)}</td><td>${c.type || ""}</td><td>${c.conforme ? "✅" : "❌"}</td><td>${c.controleur || ""}</td><td>${c.observations || ""}</td><td class="r"><button class="btn sm danger" onclick="delGen('controles',${c.id},renderSecurite)">×</button></td></tr>`).join("") : `<tr><td colspan="7" class="muted">Aucun.</td></tr>`}
+      </tbody></table></div>
+
+    <div class="card" style="margin-top:16px"><div class="bar"><div class="colhead">EPI attribués</div><button class="btn sm" onclick="addEpi()">+ Attribution</button></div>
+      <table><thead><tr><th>Salarié</th><th>Équipement</th><th>Type</th><th>Remis le</th><th>État</th><th></th></tr></thead><tbody>
+      ${epis.length ? epis.map((e) => `<tr><td>${relLabel("employees", e.employee_id, "nom")}</td><td>${e.designation}</td><td><span class="pill">${e.type || ""}</span></td><td>${(e.date_remise || "").slice(0, 10)}</td><td><span class="pill">${e.etat}</span></td><td class="r"><button class="btn sm danger" onclick="delGen('epi',${e.id},renderSecurite)">×</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucun.</td></tr>`}
+      </tbody></table></div>`;
+}
+async function addIncident() {
+  const d = await modalForm("Déclarer un incident", [
+    { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" },
+    { key: "type", label: "Type", type: "select", options: opt(["incident", "accident", "presqu_accident"]) },
+    { key: "gravite", label: "Gravité", type: "select", options: opt(["faible", "moyenne", "grave"]) },
+    { key: "employee_id", label: "Blessé (si accident)", type: "select", rel: "employees" },
+    { key: "jours_arret", label: "Jours d'arrêt", type: "number" },
+    { key: "description", label: "Description" }, { key: "mesures", label: "Mesures correctives" },
+    { key: "date_incident", label: "Date", type: "date" }]);
+  if (!d) return; await api("/api/incidents", { method: "POST", body: JSON.stringify(d) }); renderSecurite();
+}
+async function addControle() {
+  const d = await modalForm("Contrôle de sécurité", [
+    { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" },
+    { key: "type", label: "Type de contrôle" },
+    { key: "conforme", label: "Conforme", type: "select", options: [{ value: "true", label: "Oui" }, { value: "false", label: "Non" }] },
+    { key: "controleur", label: "Contrôleur" }, { key: "observations", label: "Observations" },
+    { key: "date_controle", label: "Date", type: "date" }]);
+  if (!d) return; await api("/api/controles", { method: "POST", body: JSON.stringify(d) }); renderSecurite();
+}
+async function addEpi() {
+  const d = await modalForm("Attribution d'EPI", [
+    { key: "employee_id", label: "Salarié", type: "select", rel: "employees" },
+    { key: "designation", label: "Équipement" },
+    { key: "type", label: "Type", type: "select", options: opt(["tete", "pieds", "mains", "yeux", "corps", "auditif"]) },
+    { key: "date_remise", label: "Remis le", type: "date" }]);
+  if (!d) return; await api("/api/epi", { method: "POST", body: JSON.stringify(d) }); renderSecurite();
+}
+async function delGen(ep, id, cb) { if (confirm("Supprimer ?")) { await api(`/api/${ep}/${id}`, { method: "DELETE" }); cb(); } }
+
+/* ===================== GED (versions + signatures) ===================== */
+async function renderGED() {
+  const docs = await api("/api/documents"); await getCache("chantiers");
+  V().innerHTML = `<div class="bar"><div><h1>Documents (GED)</h1><div class="sub">Versioning et circuit de signature. (Pas d'OCR.)</div></div>
+    <button class="btn sm" onclick="addDoc()">+ Document</button></div>
+    <div class="card"><table><thead><tr><th>Nom</th><th>Catégorie</th><th>Type</th><th>Chantier</th><th class="r">Version</th><th></th></tr></thead><tbody>
+    ${docs.length ? docs.map((d) => `<tr><td class="row" onclick="docFull(${d.id})">${d.nom}</td><td><span class="pill">${d.categorie || ""}</span></td><td>${d.type || ""}</td><td>${chantierLabel(d.chantier_id)}</td><td class="r mono">v${d.version || 1}</td><td class="r"><button class="btn sm" onclick="docFull(${d.id})">Ouvrir</button> <button class="btn sm danger" onclick="delGen('documents',${d.id},renderGED)">×</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucun document.</td></tr>`}
+    </tbody></table></div>`;
+}
+async function addDoc() {
+  const d = await modalForm("Nouveau document", [
+    { key: "nom", label: "Nom" },
+    { key: "categorie", label: "Catégorie", type: "select", options: opt(["technique", "administratif", "juridique", "securite", "financier"]) },
+    { key: "type", label: "Type", type: "select", options: opt(["contrat", "plan", "pv", "facture", "attachement"]) },
+    { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" }, { key: "url", label: "Lien / URL" }]);
+  if (!d) return; await api("/api/documents", { method: "POST", body: JSON.stringify({ ...d, version: 1 }) }); renderGED();
+}
+async function docFull(id) {
+  const d = await api("/api/documents/" + id + "/full");
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>${d.nom} <span class="pill">v${d.version}</span></h3>
+    <div class="sub">${d.categorie || ""} · ${d.type || ""}${d.url ? ` · <a href="${d.url}" target="_blank">ouvrir le fichier</a>` : ""}</div>
+    <div class="bar" style="margin-top:8px"><div class="colhead">Historique des versions</div><button class="btn sm" onclick="addVersion(${d.id})">+ Nouvelle version</button></div>
+    <table class="lines"><thead><tr><th>Version</th><th>Auteur</th><th>Note</th><th>Date</th></tr></thead><tbody>
+    ${d.versions.map((v) => `<tr><td>v${v.version}</td><td>${v.auteur || ""}</td><td>${v.note || ""}</td><td>${(v.created_at || "").slice(0, 10)}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">—</td></tr>`}
+    </tbody></table>
+    <div class="bar" style="margin-top:12px"><div class="colhead">Circuit de signature</div><button class="btn sm ghost" onclick="reqSign(${d.id})">+ Demander signature</button></div>
+    <table class="lines"><tbody>
+    ${d.signatures.map((s) => `<tr><td>${s.signataire}</td><td><span class="pill">${s.statut}</span></td><td>${s.date_signature ? (s.date_signature || "").slice(0, 10) : ""}</td><td class="r">${s.statut !== "signe" ? `<button class="btn sm" onclick="doSign(${s.id},${d.id})">Signer</button>` : "✅"}</td></tr>`).join("") || `<tr><td class="muted">Aucune signature demandée.</td></tr>`}
+    </tbody></table>
+    <div class="mactions"><button class="btn" onclick="el('modal-root').innerHTML=''">Fermer</button></div></div></div>`;
+}
+async function addVersion(id) {
+  const d = await modalForm("Nouvelle version", [{ key: "url", label: "Lien / URL" }, { key: "auteur", label: "Auteur" }, { key: "note", label: "Note de version" }]);
+  if (!d) return; await api(`/api/documents/${id}/versions`, { method: "POST", body: JSON.stringify(d) }); docFull(id);
+}
+async function reqSign(id) {
+  const d = await modalForm("Demander une signature", [{ key: "signataire", label: "Signataire" }]);
+  if (!d) return; await api(`/api/documents/${id}/signatures`, { method: "POST", body: JSON.stringify(d) }); docFull(id);
+}
+async function doSign(sigId, docId) { await api(`/api/signatures/${sigId}/sign`, { method: "POST", body: "{}" }); docFull(docId); }
+
+/* ===================== Fournisseurs ===================== */
+const stars = (n) => n == null ? "—" : "★".repeat(Math.round(n)) + "☆".repeat(5 - Math.round(n)) + " " + n;
+async function renderFournisseurs() {
+  const list = await api("/api/fournisseurs"); caches.fournisseurs = list;
+  V().innerHTML = `<div class="bar"><div><h1>Fournisseurs</h1><div class="sub">Conditions, historique des commandes et évaluations.</div></div>
+    <button class="btn sm" onclick="addFournisseur()">+ Fournisseur</button></div>
+    <div class="card"><table><thead><tr><th>Raison sociale</th><th>ICE</th><th>Contact</th><th>Tél</th><th></th></tr></thead><tbody>
+    ${list.map((f) => `<tr><td class="row" onclick="ficheFour(${f.id})">${f.raison_sociale}</td><td class="mono">${f.ice || ""}</td><td>${f.contact || ""}</td><td>${f.telephone || ""}</td><td class="r"><button class="btn sm" onclick="ficheFour(${f.id})">Fiche</button> <button class="btn sm danger" onclick="delGen('fournisseurs',${f.id},renderFournisseurs)">×</button></td></tr>`).join("")}
+    </tbody></table></div>`;
+}
+async function addFournisseur() {
+  const d = await modalForm("Nouveau fournisseur", [{ key: "raison_sociale", label: "Raison sociale" }, { key: "ice", label: "ICE" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }, { key: "email", label: "Email" }, { key: "conditions_paiement", label: "Conditions de paiement" }, { key: "delai_livraison", label: "Délai livraison (j)", type: "number" }]);
+  if (!d) return; await api("/api/fournisseurs", { method: "POST", body: JSON.stringify(d) }); renderFournisseurs();
+}
+async function ficheFour(id) {
+  const f = await api("/api/fournisseurs/" + id + "/fiche");
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>${f.raison_sociale}</h3>
+    <div class="sub">ICE ${f.ice || "—"} · ${f.contact || ""} · ${f.telephone || ""}${f.conditions_paiement ? " · " + f.conditions_paiement : ""}</div>
+    <div class="grid kpis" style="grid-template-columns:repeat(4,1fr);margin:10px 0">
+      <div class="card kpi"><div class="lbl">Commandes</div><div class="val mono" style="font-size:18px">${f.stats.nb_commandes}</div></div>
+      <div class="card kpi"><div class="lbl">Total commandé</div><div class="val mono" style="font-size:18px">${fmt(f.stats.total_commande)}</div></div>
+      <div class="card kpi"><div class="lbl">Total reçu</div><div class="val mono" style="font-size:18px">${fmt(f.stats.total_recu)}</div></div>
+      <div class="card kpi"><div class="lbl">Note moyenne</div><div class="val" style="font-size:16px">${stars(f.note_moyenne)}</div></div>
+    </div>
+    <div class="colhead">Commandes</div>
+    <table class="lines"><tbody>${f.commandes.map((c) => `<tr><td class="mono">${c.numero}</td><td class="r mono">${fmt(c.montant)}</td><td><span class="pill">${c.statut}</span></td></tr>`).join("") || `<tr><td class="muted">Aucune.</td></tr>`}</tbody></table>
+    <div class="bar" style="margin-top:12px"><div class="colhead">Évaluations (qualité / délai / prix)</div><button class="btn sm ghost" onclick="evalFour(${f.id})">+ Évaluation</button></div>
+    <table class="lines"><tbody>${f.evaluations.map((e) => `<tr><td>${(e.date_eval || "").slice(0, 10)}</td><td>Q${e.note_qualite}/D${e.note_delai}/P${e.note_prix}</td><td>${e.commentaire || ""}</td></tr>`).join("") || `<tr><td class="muted">Aucune.</td></tr>`}</tbody></table>
+    <div class="mactions"><button class="btn" onclick="el('modal-root').innerHTML=''">Fermer</button></div></div></div>`;
+}
+async function evalFour(id) {
+  const d = await modalForm("Évaluer le fournisseur", [{ key: "note_qualite", label: "Qualité (1-5)", type: "number" }, { key: "note_delai", label: "Délai (1-5)", type: "number" }, { key: "note_prix", label: "Prix (1-5)", type: "number" }, { key: "commentaire", label: "Commentaire" }]);
+  if (!d) return; d.fournisseur_id = id; await api("/api/fournisseur-evals", { method: "POST", body: JSON.stringify(d) }); ficheFour(id);
+}
+
+/* ===================== Sous-traitants ===================== */
+async function renderSousTraitants() {
+  const list = await api("/api/sous-traitants"); caches["sous-traitants"] = list;
+  V().innerHTML = `<div class="bar"><div><h1>Sous-traitants</h1><div class="sub">Contrats de marché, situations de paiement (avancement + retenue de garantie), évaluations.</div></div>
+    <button class="btn sm" onclick="addST()">+ Sous-traitant</button></div>
+    <div class="card"><table><thead><tr><th>Raison sociale</th><th>Spécialité</th><th>Contact</th><th>Tél</th><th></th></tr></thead><tbody>
+    ${list.map((s) => `<tr><td class="row" onclick="ficheST(${s.id})">${s.raison_sociale}</td><td><span class="pill">${s.specialite || ""}</span></td><td>${s.contact || ""}</td><td>${s.telephone || ""}</td><td class="r"><button class="btn sm" onclick="ficheST(${s.id})">Fiche</button> <button class="btn sm danger" onclick="delGen('sous-traitants',${s.id},renderSousTraitants)">×</button></td></tr>`).join("")}
+    </tbody></table></div>`;
+}
+async function addST() {
+  const d = await modalForm("Nouveau sous-traitant", [{ key: "raison_sociale", label: "Raison sociale" }, { key: "specialite", label: "Spécialité" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }]);
+  if (!d) return; await api("/api/sous-traitants", { method: "POST", body: JSON.stringify(d) }); renderSousTraitants();
+}
+async function ficheST(id) {
+  const s = await api("/api/sous-traitants/" + id + "/fiche");
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>${s.raison_sociale} <span class="pill">${s.specialite || ""}</span></h3>
+    <div class="grid kpis" style="grid-template-columns:repeat(3,1fr);margin:10px 0">
+      <div class="card kpi"><div class="lbl">Total marchés</div><div class="val mono" style="font-size:18px">${fmt(s.synthese.total_marche)}</div></div>
+      <div class="card kpi"><div class="lbl">Total payé (net)</div><div class="val mono" style="font-size:18px">${fmt(s.synthese.total_paye)}</div></div>
+      <div class="card kpi"><div class="lbl">Note moyenne</div><div class="val" style="font-size:16px">${stars(s.synthese.note_moyenne)}</div></div>
+    </div>
+    <div class="bar"><div class="colhead">Contrats de marché</div><button class="btn sm" onclick="addContratST(${s.id})">+ Contrat</button></div>
+    <table class="lines"><thead><tr><th>Objet</th><th>Chantier</th><th class="r">Montant marché</th><th class="r">RG</th><th>Statut</th><th></th></tr></thead><tbody>
+    ${s.contrats.map((c) => `<tr><td>${c.objet || ""}</td><td>${c.chantier_code || ""}</td><td class="r mono">${fmt(c.montant_marche)}</td><td class="r">${c.rg_taux} %</td><td><span class="pill">${c.statut}</span></td><td class="r"><button class="btn sm" onclick="situST(${c.id},${s.id})">Situation</button></td></tr>`).join("") || `<tr><td colspan="6" class="muted">Aucun contrat.</td></tr>`}
+    </tbody></table>
+    <div class="colhead" style="margin-top:12px">Situations de paiement</div>
+    <table class="lines"><thead><tr><th>Date</th><th class="r">Avanc.</th><th class="r">Montant</th><th class="r">RG</th><th class="r">Net à payer</th><th>Statut</th></tr></thead><tbody>
+    ${s.situations.map((x) => `<tr><td>${(x.date_situation || "").slice(0, 10)}</td><td class="r">${x.avancement || 0} %</td><td class="r mono">${fmt(x.montant)}</td><td class="r mono">${fmt(x.retenue_garantie)}</td><td class="r mono">${fmt(x.net_a_payer)}</td><td><span class="pill">${x.statut}</span></td></tr>`).join("") || `<tr><td colspan="6" class="muted">Aucune.</td></tr>`}
+    </tbody></table>
+    <div class="bar" style="margin-top:12px"><div class="colhead">Évaluations</div><button class="btn sm ghost" onclick="evalST(${s.id})">+ Évaluation</button></div>
+    <table class="lines"><tbody>${s.evaluations.map((e) => `<tr><td>${(e.date_eval || "").slice(0, 10)}</td><td>${stars(e.note)}</td><td>${e.commentaire || ""}</td></tr>`).join("") || `<tr><td class="muted">Aucune.</td></tr>`}</tbody></table>
+    <div class="mactions"><button class="btn" onclick="el('modal-root').innerHTML=''">Fermer</button></div></div></div>`;
+}
+async function addContratST(id) {
+  await getCache("chantiers");
+  const d = await modalForm("Nouveau contrat de marché", [
+    { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" },
+    { key: "objet", label: "Objet" }, { key: "montant_marche", label: "Montant du marché", type: "number" },
+    { key: "rg_taux", label: "Retenue de garantie (%)", type: "number" }, { key: "date_debut", label: "Début", type: "date" }]);
+  if (!d) return; d.sous_traitant_id = id; await api("/api/st-contrats", { method: "POST", body: JSON.stringify(d) }); ficheST(id);
+}
+async function situST(contratId, stId) {
+  const d = await modalForm("Situation de paiement", [{ key: "avancement", label: "Avancement cumulé (%)", type: "number" }]);
+  if (!d) return;
+  try { await api("/api/soustraitants/situation", { method: "POST", body: JSON.stringify({ contrat_id: contratId, avancement: d.avancement }) }); ficheST(stId); }
+  catch (e) { alert(e.message); }
+}
+async function evalST(id) {
+  const d = await modalForm("Évaluer le sous-traitant", [{ key: "note", label: "Note (1-5)", type: "number" }, { key: "commentaire", label: "Commentaire" }]);
+  if (!d) return; d.sous_traitant_id = id; await api("/api/st-evals", { method: "POST", body: JSON.stringify(d) }); ficheST(id);
+}
+
+/* ===================== Modules génériques ===================== */
+const MOD = {
+  chantiers: { title: "Chantiers", ep: "/api/chantiers", cache: "chantiers",
+    cols: [["code", "Code", "mono"], ["nom", "Nom"], ["client", "Client"], ["ville", "Ville"], ["statut", "Statut", "pill"], ["budget_prevu", "Budget", "num"]],
+    fields: [{ key: "code", label: "Code" }, { key: "nom", label: "Nom" }, { key: "client", label: "Client" }, { key: "ville", label: "Ville" }, { key: "budget_prevu", label: "Budget prévu", type: "number" }, { key: "date_debut", label: "Début", type: "date" }, { key: "statut", label: "Statut", type: "select", options: opt(["prospect", "en_cours", "suspendu", "clos"]) }] },
+  incidents: { title: "Sécurité chantier", ep: "/api/incidents",
+    cols: [["date_incident", "Date"], ["chantier_id", "Chantier", "chantier"], ["type", "Type"], ["gravite", "Gravité", "pill"], ["statut", "Statut", "pill"]],
+    fields: [{ key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" }, { key: "type", label: "Type", type: "select", options: opt(["incident", "accident", "presqu_accident"]) }, { key: "gravite", label: "Gravité", type: "select", options: opt(["faible", "moyenne", "grave"]) }, { key: "description", label: "Description" }, { key: "date_incident", label: "Date", type: "date" }] },
+  documents: { title: "Documents (GED)", ep: "/api/documents",
+    cols: [["nom", "Nom"], ["type", "Type", "pill"], ["chantier_id", "Chantier", "chantier"], ["version", "Version"]],
+    fields: [{ key: "nom", label: "Nom" }, { key: "type", label: "Type", type: "select", options: opt(["contrat", "plan", "pv", "facture", "attachement"]) }, { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" }, { key: "url", label: "Lien / URL" }] },
+  factures: { title: "Factures", ep: "/api/factures",
+    cols: [["numero", "N°", "mono"], ["client", "Client"], ["type", "Type", "pill"], ["montant_ttc", "TTC", "num"], ["statut", "Statut", "pill"]],
+    fields: [{ key: "numero", label: "N°" }, { key: "client", label: "Client" }, { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" }, { key: "type", label: "Type", type: "select", options: opt(["facture", "situation", "acompte", "decompte"]) }, { key: "montant_ht", label: "Montant HT", type: "number" }, { key: "montant_ttc", label: "Montant TTC", type: "number" }, { key: "statut", label: "Statut", type: "select", options: opt(["brouillon", "emise", "payee"]) }] },
+  "demandes-achat": { title: "Demandes d'achat", ep: "/api/demandes-achat",
+    cols: [["objet", "Objet"], ["chantier_id", "Chantier", "chantier"], ["statut", "Statut", "pill"]],
+    fields: [{ key: "objet", label: "Objet" }, { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" }, { key: "statut", label: "Statut", type: "select", options: opt(["demande", "approuvee", "commandee", "recue"]) }] },
+  fournisseurs: { title: "Fournisseurs", ep: "/api/fournisseurs", cache: "fournisseurs",
+    cols: [["raison_sociale", "Raison sociale"], ["ice", "ICE", "mono"], ["contact", "Contact"], ["telephone", "Tél"], ["email", "Email"]],
+    fields: [{ key: "raison_sociale", label: "Raison sociale" }, { key: "ice", label: "ICE" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }, { key: "email", label: "Email" }] },
+  "sous-traitants": { title: "Sous-traitants", ep: "/api/sous-traitants", cache: "sous-traitants",
+    cols: [["raison_sociale", "Raison sociale"], ["specialite", "Spécialité", "pill"], ["contact", "Contact"], ["telephone", "Tél"]],
+    fields: [{ key: "raison_sociale", label: "Raison sociale" }, { key: "specialite", label: "Spécialité" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }] },
+};
+function cell(row, [key, , kind]) {
+  const v = row[key];
+  if (kind === "num") return `<td class="r mono">${fmt(v)}</td>`;
+  if (kind === "mono") return `<td class="mono">${v ?? ""}</td>`;
+  if (kind === "pill") return `<td>${v ? `<span class="pill">${v}</span>` : ""}</td>`;
+  if (kind === "chantier") return `<td>${chantierLabel(v)}</td>`;
+  return `<td>${v ?? ""}</td>`;
+}
+async function renderMod(key) {
+  const m = MOD[key]; if (!m) { V().innerHTML = `<div class="warn">Module inconnu.</div>`; return; }
+  if (m.fields.some((f) => f.rel === "chantiers")) await getCache("chantiers");
+  const list = await api(m.ep); if (m.cache) caches[m.cache] = list;
+  V().innerHTML = `<div class="bar"><div><h1>${m.title}</h1></div><button class="btn sm" onclick="addMod('${key}')">+ Ajouter</button></div>
+    <div class="card"><table><thead><tr>${m.cols.map((c) => `<th class="${c[2] === "num" ? "r" : ""}">${c[1]}</th>`).join("")}<th></th></tr></thead><tbody>
+    ${list.length ? list.map((row) => `<tr>${m.cols.map((c) => cell(row, c)).join("")}<td class="r"><button class="btn sm danger" onclick="delMod('${key}',${row.id})">Suppr.</button></td></tr>`).join("") : `<tr><td colspan="${m.cols.length + 1}" class="muted">Aucun élément.</td></tr>`}
+    </tbody></table></div>`;
+}
+async function addMod(key) {
+  const m = MOD[key]; const d = await modalForm("Ajouter — " + m.title, m.fields);
+  if (!d) return;
+  try { await api(m.ep, { method: "POST", body: JSON.stringify(d) }); if (m.cache) clearCache(m.cache); renderMod(key); } catch (e) { alert(e.message); }
+}
+async function delMod(key, id) { const m = MOD[key]; if (confirm("Supprimer ?")) { await api(`${m.ep}/${id}`, { method: "DELETE" }); if (m.cache) clearCache(m.cache); renderMod(key); } }
+
+/* ===================== Intégrations (adaptateurs cadrés) ===================== */
+function renderIntegrations() {
+  const items = [
+    ["DAMANCOM (CNSS)", "Télédéclaration des salaires — export XML", "À configurer"],
+    ["SIMPL-IR (DGI)", "Déclaration de l'IR sur salaires", "À configurer"],
+    ["Google Maps", "Géolocalisation des chantiers", "À configurer"],
+    ["Twilio", "SMS / notifications", "À configurer"],
+    ["WhatsApp Business", "Messages aux équipes", "À configurer"],
+    ["Paiement bancaire", "Virements de paie", "À configurer"],
+  ];
+  V().innerHTML = `<h1>Intégrations</h1><div class="sub">Adaptateurs prévus par l'architecture.</div>
+    <div class="warn" style="margin-bottom:14px">⚠️ Ces connecteurs sont <b>cadrés mais non connectés</b> : ils nécessitent les spécifications et identifiants officiels (CNSS, DGI, banque) pour être activés. Honnêteté : ils ne fonctionnent pas tant qu'ils ne sont pas configurés avec de vrais accès.</div>
+    <div class="grid" style="grid-template-columns:repeat(2,1fr)">
+    ${items.map(([n, d, s]) => `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><b>${n}</b><span class="pill">${s}</span></div><div class="muted" style="margin-top:6px">${d}</div></div>`).join("")}
+    </div>`;
+}
+
+/* ===================== Démarrage ===================== */
+if (token && me) enterApp();

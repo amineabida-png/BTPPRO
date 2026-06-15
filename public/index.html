@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BTPPro · ERP BTP Maroc 2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<div id="login" class="login">
+  <form id="login-form" class="login-card">
+    <div class="brand-lg"><span class="logo">🏗️</span> BTPPro</div>
+    <p class="muted">ERP BTP — Maroc 2026</p>
+    <label>Email</label>
+    <input id="email" type="email" value="admin@btppro.ma" autocomplete="username" />
+    <label>Mot de passe</label>
+    <input id="password" type="password" value="btppro2026" autocomplete="current-password" />
+    <button class="btn" type="submit">Se connecter</button>
+    <div id="login-err" class="err"></div>
+    <p class="hint">Démo : admin@btppro.ma / btppro2026</p>
+  </form>
+</div>
+
+<div id="app" class="app hide">
+  <aside class="side">
+    <div class="brand"><span class="logo">🏗️</span> BTPPro</div>
+    <select id="company-switch" class="company-switch" onchange="switchCompany(this.value)"></select>
+    <div class="navgrp">Pilotage</div>
+    <button class="nav active" data-view="dash">📊 Tableau de bord</button>
+    <button class="nav" data-view="rentabilite">📈 Rentabilité</button>
+    <div class="navgrp">RH &amp; Paie</div>
+    <button class="nav" data-view="emps">👷 Salariés</button>
+    <button class="nav" data-view="organigramme">🧭 Organigramme</button>
+    <button class="nav" data-view="paie">🧾 Paie</button>
+    <button class="nav" data-view="conges">🌴 Congés</button>
+    <button class="nav" data-view="runs">📁 Historique paie</button>
+    <div class="navgrp">Chantiers</div>
+    <button class="nav" data-view="chantiers">🏗️ Chantiers</button>
+    <button class="nav" data-view="incidents">⛑️ Sécurité</button>
+    <button class="nav" data-view="documents">📂 Documents</button>
+    <div class="navgrp">Commercial</div>
+    <button class="nav" data-view="ouvrages">📚 Bibliothèque prix</button>
+    <button class="nav" data-view="devis">📝 Devis</button>
+    <button class="nav" data-view="factures">💶 Factures</button>
+    <div class="navgrp">Achats &amp; Stock</div>
+    <button class="nav" data-view="articles">📦 Stock</button>
+    <button class="nav" data-view="demandes-achat">🛒 Achats</button>
+    <button class="nav" data-view="bons-commande">📥 Commandes</button>
+    <button class="nav" data-view="fournisseurs">🏭 Fournisseurs</button>
+    <button class="nav" data-view="sous-traitants">🤝 Sous-traitants</button>
+    <div class="navgrp">Système</div>
+    <button class="nav" data-view="integrations">🔌 Intégrations</button>
+    <button class="nav" data-view="users">👥 Utilisateurs</button>
+    <div class="side-foot"><div id="who" class="muted"></div><div id="role-badge" class="pill" style="margin:4px 0"></div><button id="open-2fa" class="link" onclick="open2FA()">🔐 Sécurité (2FA)</button><button id="logout" class="link">Déconnexion</button></div>
+  </aside>
+  <main class="main"><section id="view"></section></main>
+</div>
+<div id="modal-root"></div>
+<script src="/app.js"></script>
+</body>
+</html>
