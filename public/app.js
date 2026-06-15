@@ -253,7 +253,21 @@ function modalForm(title, fields, initial = {}) {
   });
 }
 
-/* ===================== Tableau de bord ===================== */
+/* ===================== Édition générique ===================== */
+async function editEntity(ep, fields, obj, after) {
+  const init = {}; fields.forEach((f) => { if (obj[f.key] != null) init[f.key] = obj[f.key]; });
+  const d = await modalForm("Modifier la fiche", fields, init);
+  if (!d) return;
+  try { await api(ep + "/" + obj.id, { method: "PUT", body: JSON.stringify(d) }); after && after(); }
+  catch (e) { alert(e.message); }
+}
+function findCached(key, id) { return (caches[key] || []).find((x) => x.id === id); }
+function editEmp(id) { const o = findCached("employees", id); if (o) editEntity("/api/employees", [{ key: "nom", label: "Nom" }, { key: "poste", label: "Poste" }, { key: "cin", label: "CIN" }, { key: "mois_anciennete", label: "Ancienneté (mois)", type: "number" }, { key: "personnes_charge", label: "Personnes à charge", type: "number" }], o, () => { clearCache("employees"); renderEmps(); }); }
+function editChantier(id) { const o = findCached("chantiers", id); if (o) editEntity("/api/chantiers", [{ key: "code", label: "Code" }, { key: "nom", label: "Nom" }, { key: "client", label: "Client" }, { key: "ville", label: "Ville" }, { key: "budget_prevu", label: "Budget prévu", type: "number" }, { key: "statut", label: "Statut", type: "select", options: opt(["prospect", "en_cours", "suspendu", "clos"]) }], o, () => { clearCache("chantiers"); renderChantiers(); }); }
+function editArticle(id) { const o = findCached("articles", id); if (o) editEntity("/api/articles", [{ key: "reference", label: "Référence" }, { key: "designation", label: "Désignation" }, { key: "unite", label: "Unité" }, { key: "seuil", label: "Seuil d'alerte", type: "number" }], o, () => renderStock()); }
+function editFournisseur(id) { const o = findCached("fournisseurs", id); if (o) editEntity("/api/fournisseurs", [{ key: "raison_sociale", label: "Raison sociale" }, { key: "ice", label: "ICE" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }, { key: "email", label: "Email" }, { key: "conditions_paiement", label: "Conditions de paiement" }], o, () => renderFournisseurs()); }
+function editST(id) { const o = findCached("sous-traitants", id); if (o) editEntity("/api/sous-traitants", [{ key: "raison_sociale", label: "Raison sociale" }, { key: "specialite", label: "Spécialité" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }], o, () => renderSousTraitants()); }
+function editMod(key, id) { const m = MOD[key]; const o = (caches["mod:" + key] || []).find((x) => x.id === id); if (o) editEntity(m.ep, m.fields, o, () => { if (m.cache) clearCache(m.cache); renderMod(key); }); }
 function companyName() { const c = (window._companies || []).find((x) => String(x.id) === String(activeCompany)); return c ? c.raison_sociale : "Société"; }
 async function renderDash() {
   const d = await api("/api/dashboard");
@@ -349,7 +363,7 @@ async function renderEmps() {
     <button class="btn sm" onclick="addEmp()">+ Ajouter</button></div>
     <div class="card"><table><thead><tr><th>Matricule</th><th>Salarié</th><th>Poste</th><th>Contrat</th><th class="r">Ancienneté</th><th class="r">Salaire</th><th class="r">Net</th><th></th></tr></thead><tbody>
     ${emps.map((e) => { const a = Math.floor(e.mois_anciennete / 12); return `<tr><td class="mono">${e.matricule}</td><td class="row" onclick="fiche(${e.id})">${e.nom}</td><td><span class="pill">${e.poste || ""}</span></td><td>${e.contrat_type ? `<span class="pill">${e.contrat_type}</span>` : ""}</td><td class="r">${a} an${a > 1 ? "s" : ""}</td><td class="r mono">${fmt(e.salaire_effectif || e.salaire_base)}</td><td class="r mono">${fmt(e.paie.netAPayer)}</td>
-      <td class="r"><button class="btn sm" onclick="fiche(${e.id})">Fiche</button> <button class="btn sm ghost" onclick="goPaie(${e.id})">Paie</button> <button class="btn sm danger" onclick="delEmp(${e.id})">×</button></td></tr>`; }).join("")}
+      <td class="r"><button class="btn sm" onclick="fiche(${e.id})">Fiche</button> <button class="btn sm ghost" onclick="editEmp(${e.id})">✏️</button> <button class="btn sm ghost" onclick="goPaie(${e.id})">Paie</button> <button class="btn sm danger" onclick="delEmp(${e.id})">×</button></td></tr>`; }).join("")}
     </tbody></table></div>`;
 }
 async function addEmp() {
@@ -661,7 +675,7 @@ async function renderStock() {
     <div style="display:flex;gap:8px;align-items:center"><div class="pill">Valeur totale : <b class="mono">${fmt(v.total)} MAD</b></div><button class="btn sm" onclick="addArticle()">+ Article</button></div></div>
     <div class="card"><table><thead><tr><th>Référence</th><th>Désignation</th><th class="r">Stock</th><th class="r">Seuil</th><th class="r">CMUP</th><th class="r">Valeur</th><th></th></tr></thead><tbody>
     ${v.articles.map((a) => `<tr><td class="mono">${a.reference}</td><td>${a.designation}</td><td class="r mono ${Number(a.stock) < Number(a.seuil) ? "neg" : ""}">${fmt(a.stock)} ${a.unite}</td><td class="r mono">${fmt(a.seuil)}</td><td class="r mono">${fmt(a.cmup)}</td><td class="r mono">${fmt(a.valeur)}</td>
-      <td class="r"><button class="btn sm" onclick="mvtStock(${a.id})">Mouvement</button> <button class="btn sm ghost" onclick="inventaire(${a.id},${a.stock})">Inventaire</button></td></tr>`).join("")}
+      <td class="r"><button class="btn sm" onclick="mvtStock(${a.id})">Mouvement</button> <button class="btn sm ghost" onclick="inventaire(${a.id},${a.stock})">Inventaire</button> <button class="btn sm ghost" onclick="editArticle(${a.id})">✏️</button></td></tr>`).join("")}
     </tbody></table></div>`;
 }
 async function addArticle() {
@@ -735,7 +749,7 @@ async function renderChantiers() {
     <button class="btn sm" onclick="addChantier()">+ Chantier</button></div>
     <div class="card"><table><thead><tr><th>Code</th><th>Nom</th><th>Client</th><th>Ville</th><th>Statut</th><th class="r">Budget prévu</th><th></th></tr></thead><tbody>
     ${list.map((c) => `<tr><td class="mono">${c.code}</td><td>${c.nom}</td><td>${c.client || ""}</td><td>${c.ville || ""}</td><td><span class="pill">${c.statut}</span></td><td class="r mono">${fmt(c.budget_prevu)}</td>
-      <td class="r"><button class="btn sm" onclick="budgetChantier(${c.id})">Budget</button> <button class="btn sm danger" onclick="delChantier(${c.id})">×</button></td></tr>`).join("")}
+      <td class="r"><button class="btn sm" onclick="budgetChantier(${c.id})">Budget</button> <button class="btn sm ghost" onclick="editChantier(${c.id})">✏️</button> <button class="btn sm danger" onclick="delChantier(${c.id})">×</button></td></tr>`).join("")}
     </tbody></table></div>`;
 }
 async function addChantier() {
@@ -868,7 +882,7 @@ async function renderFournisseurs() {
   V().innerHTML = `<div class="bar"><div><h1>Fournisseurs</h1><div class="sub">Conditions, historique des commandes et évaluations.</div></div>
     <button class="btn sm" onclick="addFournisseur()">+ Fournisseur</button></div>
     <div class="card"><table><thead><tr><th>Raison sociale</th><th>ICE</th><th>Contact</th><th>Tél</th><th></th></tr></thead><tbody>
-    ${list.map((f) => `<tr><td class="row" onclick="ficheFour(${f.id})">${f.raison_sociale}</td><td class="mono">${f.ice || ""}</td><td>${f.contact || ""}</td><td>${f.telephone || ""}</td><td class="r"><button class="btn sm" onclick="ficheFour(${f.id})">Fiche</button> <button class="btn sm danger" onclick="delGen('fournisseurs',${f.id},renderFournisseurs)">×</button></td></tr>`).join("")}
+    ${list.map((f) => `<tr><td class="row" onclick="ficheFour(${f.id})">${f.raison_sociale}</td><td class="mono">${f.ice || ""}</td><td>${f.contact || ""}</td><td>${f.telephone || ""}</td><td class="r"><button class="btn sm" onclick="ficheFour(${f.id})">Fiche</button> <button class="btn sm ghost" onclick="editFournisseur(${f.id})">✏️</button> <button class="btn sm danger" onclick="delGen('fournisseurs',${f.id},renderFournisseurs)">×</button></td></tr>`).join("")}
     </tbody></table></div>`;
 }
 async function addFournisseur() {
@@ -902,7 +916,7 @@ async function renderSousTraitants() {
   V().innerHTML = `<div class="bar"><div><h1>Sous-traitants</h1><div class="sub">Contrats de marché, situations de paiement (avancement + retenue de garantie), évaluations.</div></div>
     <button class="btn sm" onclick="addST()">+ Sous-traitant</button></div>
     <div class="card"><table><thead><tr><th>Raison sociale</th><th>Spécialité</th><th>Contact</th><th>Tél</th><th></th></tr></thead><tbody>
-    ${list.map((s) => `<tr><td class="row" onclick="ficheST(${s.id})">${s.raison_sociale}</td><td><span class="pill">${s.specialite || ""}</span></td><td>${s.contact || ""}</td><td>${s.telephone || ""}</td><td class="r"><button class="btn sm" onclick="ficheST(${s.id})">Fiche</button> <button class="btn sm danger" onclick="delGen('sous-traitants',${s.id},renderSousTraitants)">×</button></td></tr>`).join("")}
+    ${list.map((s) => `<tr><td class="row" onclick="ficheST(${s.id})">${s.raison_sociale}</td><td><span class="pill">${s.specialite || ""}</span></td><td>${s.contact || ""}</td><td>${s.telephone || ""}</td><td class="r"><button class="btn sm" onclick="ficheST(${s.id})">Fiche</button> <button class="btn sm ghost" onclick="editST(${s.id})">✏️</button> <button class="btn sm danger" onclick="delGen('sous-traitants',${s.id},renderSousTraitants)">×</button></td></tr>`).join("")}
     </tbody></table></div>`;
 }
 async function addST() {
@@ -983,10 +997,10 @@ function cell(row, [key, , kind]) {
 async function renderMod(key) {
   const m = MOD[key]; if (!m) { V().innerHTML = `<div class="warn">Module inconnu.</div>`; return; }
   if (m.fields.some((f) => f.rel === "chantiers")) await getCache("chantiers");
-  const list = await api(m.ep); if (m.cache) caches[m.cache] = list;
+  const list = await api(m.ep); if (m.cache) caches[m.cache] = list; caches["mod:" + key] = list;
   V().innerHTML = `<div class="bar"><div><h1>${m.title}</h1></div><button class="btn sm" onclick="addMod('${key}')">+ Ajouter</button></div>
     <div class="card"><table><thead><tr>${m.cols.map((c) => `<th class="${c[2] === "num" ? "r" : ""}">${c[1]}</th>`).join("")}<th></th></tr></thead><tbody>
-    ${list.length ? list.map((row) => `<tr>${m.cols.map((c) => cell(row, c)).join("")}<td class="r"><button class="btn sm danger" onclick="delMod('${key}',${row.id})">Suppr.</button></td></tr>`).join("") : `<tr><td colspan="${m.cols.length + 1}" class="muted">Aucun élément.</td></tr>`}
+    ${list.length ? list.map((row) => `<tr>${m.cols.map((c) => cell(row, c)).join("")}<td class="r"><button class="btn sm ghost" onclick="editMod('${key}',${row.id})">✏️</button> <button class="btn sm danger" onclick="delMod('${key}',${row.id})">×</button></td></tr>`).join("") : `<tr><td colspan="${m.cols.length + 1}" class="muted">Aucun élément.</td></tr>`}
     </tbody></table></div>`;
 }
 async function addMod(key) {

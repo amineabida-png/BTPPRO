@@ -179,12 +179,12 @@ app.post("/api/employees", requireAuth, wrap(async (req, res) => {
   res.status(201).json(rows[0]);
 }));
 app.put("/api/employees/:id", requireAuth, wrap(async (req, res) => {
-  const { nom, poste, salaire_base, mois_anciennete, personnes_charge } = req.body || {};
+  const { nom, poste, cin, salaire_base, mois_anciennete, personnes_charge } = req.body || {};
   const { rows } = await pool.query(
-    `UPDATE employee SET nom=COALESCE($2,nom), poste=COALESCE($3,poste),
-       salaire_base=COALESCE($4,salaire_base), mois_anciennete=COALESCE($5,mois_anciennete),
-       personnes_charge=COALESCE($6,personnes_charge) WHERE id=$1 RETURNING *`,
-    [req.params.id, nom, poste, salaire_base, mois_anciennete, personnes_charge]);
+    `UPDATE employee SET nom=COALESCE($2,nom), poste=COALESCE($3,poste), cin=COALESCE($4,cin),
+       salaire_base=COALESCE($5,salaire_base), mois_anciennete=COALESCE($6,mois_anciennete),
+       personnes_charge=COALESCE($7,personnes_charge) WHERE id=$1 RETURNING *`,
+    [req.params.id, nom, poste, cin, salaire_base, mois_anciennete, personnes_charge]);
   if (!rows[0]) return res.status(404).json({ error: "Salarié introuvable" });
   res.json(rows[0]);
 }));
@@ -380,7 +380,7 @@ const RESOURCES = {
   articles:       ["article", ["reference","designation","unite","stock","seuil","prix_unitaire"]],
   "demandes-achat": ["demande_achat", ["objet","chantier_id","statut"]],
   "bons-commande":  ["bon_commande", ["numero","fournisseur_id","montant","statut","date_commande"]],
-  fournisseurs:   ["fournisseur", ["raison_sociale","ice","contact","telephone","email"]],
+  fournisseurs:   ["fournisseur", ["raison_sociale","ice","contact","telephone","email","conditions_paiement","delai_livraison"]],
   "sous-traitants": ["sous_traitant", ["raison_sociale","specialite","contact","telephone"]],
   "situations-st":  ["soustraitant_situation", ["sous_traitant_id","chantier_id","montant","statut","date_situation"]],
   conges:         ["conge", ["employee_id","type","date_debut","date_fin","jours","statut","motif"]],
