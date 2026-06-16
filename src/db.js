@@ -242,6 +242,78 @@ ALTER TABLE evaluation ADD COLUMN IF NOT EXISTS company_id int REFERENCES compan
 ALTER TABLE payroll_run DROP CONSTRAINT IF EXISTS payroll_run_periode_annee_periode_mois_key;
 CREATE UNIQUE INDEX IF NOT EXISTS payroll_run_company_periode ON payroll_run (company_id, periode_annee, periode_mois);
 
+-- Pointage des heures (main d'œuvre par chantier)
+CREATE TABLE IF NOT EXISTS pointage (
+  id serial PRIMARY KEY,
+  employee_id int REFERENCES employee(id),
+  chantier_id int REFERENCES chantier(id),
+  date_jour date NOT NULL DEFAULT current_date,
+  heures numeric(5,2) NOT NULL DEFAULT 0,
+  heures_sup numeric(5,2) NOT NULL DEFAULT 0,
+  company_id int REFERENCES company(id),
+  created_at timestamptz DEFAULT now());
+
+-- Planning : tâches de chantier
+CREATE TABLE IF NOT EXISTS tache (
+  id serial PRIMARY KEY,
+  chantier_id int REFERENCES chantier(id),
+  libelle text NOT NULL,
+  date_debut date, date_fin date,
+  avancement int NOT NULL DEFAULT 0,
+  responsable text, statut text NOT NULL DEFAULT 'a_faire',
+  company_id int REFERENCES company(id),
+  created_at timestamptz DEFAULT now());
+
+-- Trésorerie : paiements (encaissements / décaissements)
+CREATE TABLE IF NOT EXISTS paiement (
+  id serial PRIMARY KEY,
+  sens text NOT NULL DEFAULT 'encaissement',
+  facture_id int REFERENCES facture(id),
+  tiers text,
+  montant numeric(14,2) NOT NULL DEFAULT 0,
+  date_paiement date NOT NULL DEFAULT current_date,
+  mode text DEFAULT 'virement',
+  reference text,
+  company_id int REFERENCES company(id),
+  created_at timestamptz DEFAULT now());
+
+-- Parc matériel & engins
+CREATE TABLE IF NOT EXISTS materiel (
+  id serial PRIMARY KEY,
+  code text, designation text NOT NULL, type text DEFAULT 'engin',
+  etat text NOT NULL DEFAULT 'disponible',
+  valeur_acquisition numeric(14,2) DEFAULT 0, date_acquisition date,
+  chantier_id int REFERENCES chantier(id),
+  company_id int REFERENCES company(id), created_at timestamptz DEFAULT now());
+CREATE TABLE IF NOT EXISTS materiel_maintenance (
+  id serial PRIMARY KEY,
+  materiel_id int REFERENCES materiel(id) ON DELETE CASCADE,
+  date_maintenance date NOT NULL DEFAULT current_date,
+  type text, cout numeric(12,2) DEFAULT 0, note text,
+  company_id int REFERENCES company(id), created_at timestamptz DEFAULT now());
+
+-- Rapports de chantier (avec photos)
+CREATE TABLE IF NOT EXISTS rapport_chantier (
+  id serial PRIMARY KEY,
+  chantier_id int REFERENCES chantier(id),
+  date_rapport date NOT NULL DEFAULT current_date,
+  meteo text, effectif int DEFAULT 0, avancement text, observations text,
+  company_id int REFERENCES company(id), created_at timestamptz DEFAULT now());
+CREATE TABLE IF NOT EXISTS rapport_photo (
+  id serial PRIMARY KEY,
+  rapport_id int REFERENCES rapport_chantier(id) ON DELETE CASCADE,
+  data text, legende text, created_at timestamptz DEFAULT now());
+
+-- Multi-tenant : rattachement d'un utilisateur à une société (NULL = super-admin)
+ALTER TABLE app_user ADD COLUMN IF NOT EXISTS company_id int REFERENCES company(id);
+
+-- Journal d'activité (audit trail)
+CREATE TABLE IF NOT EXISTS activite (
+  id serial PRIMARY KEY,
+  user_email text, action text, cible text, statut int,
+  company_id int, created_at timestamptz DEFAULT now());
+CREATE INDEX IF NOT EXISTS activite_company_idx ON activite (company_id, created_at DESC);
+
 -- Société : coordonnées et identité pour les documents (devis, factures…)
 ALTER TABLE company ADD COLUMN IF NOT EXISTS adresse text;
 ALTER TABLE company ADD COLUMN IF NOT EXISTS ville text;
@@ -258,6 +330,10 @@ ALTER TABLE company ADD COLUMN IF NOT EXISTS devis_format text DEFAULT 'DEV-{AAA
 ALTER TABLE company ADD COLUMN IF NOT EXISTS facture_format text DEFAULT 'FAC-{AAAA}-{####}';
 ALTER TABLE company ADD COLUMN IF NOT EXISTS devis_compteur int DEFAULT 0;
 ALTER TABLE company ADD COLUMN IF NOT EXISTS facture_compteur int DEFAULT 0;
+ALTER TABLE devis ADD COLUMN IF NOT EXISTS client_ice text;
+ALTER TABLE facture ADD COLUMN IF NOT EXISTS client_ice text;
+ALTER TABLE facture ADD COLUMN IF NOT EXISTS ref_facture_id int;
+ALTER TABLE facture ADD COLUMN IF NOT EXISTS motif text;
 `;
 
 async function seedIfEmpty(table, fn) {

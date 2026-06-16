@@ -30,6 +30,7 @@
     <select id="company-switch" class="company-switch" onchange="switchCompany(this.value)"></select>
     <div class="navgrp">Pilotage</div>
     <button class="nav active" data-view="dash">📊 Tableau de bord</button>
+    <button class="nav" data-view="alertes">🔔 Alertes</button>
     <button class="nav" data-view="rentabilite">📈 Rentabilité</button>
     <div class="navgrp">RH &amp; Paie</div>
     <button class="nav" data-view="emps">👷 Salariés</button>
@@ -39,12 +40,18 @@
     <button class="nav" data-view="runs">📁 Historique paie</button>
     <div class="navgrp">Chantiers</div>
     <button class="nav" data-view="chantiers">🏗️ Chantiers</button>
+    <button class="nav" data-view="planning">📅 Planning</button>
+    <button class="nav" data-view="pointage">⏱️ Pointage</button>
+    <button class="nav" data-view="materiel">🚜 Parc matériel</button>
+    <button class="nav" data-view="rapports">📸 Rapports</button>
     <button class="nav" data-view="incidents">⛑️ Sécurité</button>
     <button class="nav" data-view="documents">📂 Documents</button>
     <div class="navgrp">Commercial</div>
     <button class="nav" data-view="ouvrages">📚 Bibliothèque prix</button>
     <button class="nav" data-view="devis">📝 Devis</button>
     <button class="nav" data-view="factures">💶 Factures</button>
+    <button class="nav" data-view="tresorerie">💰 Trésorerie</button>
+    <button class="nav" data-view="compta">🧮 Comptabilité</button>
     <div class="navgrp">Achats &amp; Stock</div>
     <button class="nav" data-view="articles">📦 Stock</button>
     <button class="nav" data-view="demandes-achat">🛒 Achats</button>
@@ -53,6 +60,8 @@
     <button class="nav" data-view="sous-traitants">🤝 Sous-traitants</button>
     <div class="navgrp">Système</div>
     <button class="nav" data-view="societe">⚙️ Ma société</button>
+    <button class="nav" data-view="journal">📜 Journal d'activité</button>
+    <button class="nav" data-view="onboarding">➕ Nouveau client</button>
     <button class="nav" data-view="integrations">🔌 Intégrations</button>
     <button class="nav" data-view="users">👥 Utilisateurs</button>
     <div class="side-foot"><div id="who" class="muted"></div><div id="role-badge" class="pill" style="margin:4px 0"></div><button id="open-2fa" class="link" onclick="open2FA()">🔐 Sécurité (2FA)</button><button id="logout" class="link">Déconnexion</button></div>

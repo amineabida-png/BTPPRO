@@ -35,6 +35,12 @@ function domainOf(p) {
   if (p.startsWith("/api/documents") || p.startsWith("/api/signatures")) return "ged";
   if (p.startsWith("/api/devis") || p.startsWith("/api/ouvrages") || p.startsWith("/api/composants")) return "devis";
   if (p.startsWith("/api/factures")) return "facturation";
+  if (p.startsWith("/api/paiements") || p.startsWith("/api/tresorerie")) return "facturation";
+  if (p.startsWith("/api/pointages") || p.startsWith("/api/taches")) return "chantiers";
+  if (p.startsWith("/api/materiel") || p.startsWith("/api/rapports")) return "chantiers";
+  if (p.startsWith("/api/alertes")) return null;
+  if (p.startsWith("/api/compta")) return "rentabilite";
+  if (p.startsWith("/api/activite") || p.startsWith("/api/onboarding")) return "admin";
   if (p.startsWith("/api/articles") || p.startsWith("/api/stock")) return "stock";
   if (p.startsWith("/api/commandes") || p.startsWith("/api/demandes-achat") || p.startsWith("/api/bons-commande")) return "achats";
   if (p.startsWith("/api/fournisseur") || p.startsWith("/api/sous-traitants") || p.startsWith("/api/soustraitants") || p.startsWith("/api/st-")) return "tiers";
@@ -52,6 +58,16 @@ app.use("/api", (req, res, next) => {
   req.companyId = Number(req.headers["x-company-id"]) || null; // société active (multi-société)
   const dom = domainOf(full);
   if (!roleHasDomain(req.user.role, dom)) return res.status(403).json({ error: "Accès refusé pour votre rôle (" + req.user.role + ")" });
+  // Journal d'activité : trace des opérations modifiantes (après réponse)
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method) && !full.startsWith("/api/export") && !full.startsWith("/api/auth")) {
+    const email = req.user.email, companyId = Number(req.headers["x-company-id"]) || req.user.company_id || null;
+    res.on("finish", () => {
+      if (res.statusCode < 400) {
+        pool.query("INSERT INTO activite (user_email,action,cible,statut,company_id) VALUES ($1,$2,$3,$4,$5)",
+          [email, req.method, full.replace(/^\/api\//, ""), res.statusCode, companyId]).catch(() => {});
+      }
+    });
+  }
   next();
 });
 
@@ -62,7 +78,7 @@ async function defaultCompany() {
   DEFAULT_COMPANY_ID = (await pool.query("SELECT id FROM company ORDER BY id LIMIT 1")).rows[0]?.id || null;
   return DEFAULT_COMPANY_ID;
 }
-const cid = async (req) => req.companyId || (await defaultCompany());
+const cid = async (req) => (req.user && req.user.company_id) || req.companyId || (await defaultCompany());
 
 // ── Santé / Auth ──
 app.get("/api/health", (_req, res) => res.json({ ok: true, annee: SETTINGS.annee }));
@@ -79,7 +95,7 @@ app.post("/api/auth/login", wrap(async (req, res) => {
     if (!authenticator.check(String(code), user.totp_secret || ""))
       return res.status(401).json({ error: "Code 2FA incorrect" });
   }
-  res.json({ token: sign(user), user: { id: user.id, email: user.email, name: user.full_name, role: user.role, totp_enabled: user.totp_enabled } });
+  res.json({ token: sign(user), user: { id: user.id, email: user.email, name: user.full_name, role: user.role, company_id: user.company_id || null, totp_enabled: user.totp_enabled } });
 }));
 app.get("/api/me", requireAuth, (req, res) =>
   res.json({ user: req.user, permissions: domainsForRole(req.user.role), roles: ROLES }));
@@ -112,8 +128,11 @@ app.get("/api/2fa/status", requireAuth, wrap(async (req, res) =>
   res.json({ totp_enabled: (await pool.query("SELECT totp_enabled FROM app_user WHERE id=$1", [req.user.sub])).rows[0]?.totp_enabled || false })));
 
 // ── Sociétés (multi-société) ──
-app.get("/api/companies", requireAuth, wrap(async (_req, res) =>
-  res.json((await pool.query("SELECT id,raison_sociale,ice FROM company ORDER BY id")).rows)));
+app.get("/api/companies", requireAuth, wrap(async (req, res) => {
+  if (req.user.company_id)
+    return res.json((await pool.query("SELECT id,raison_sociale,ice FROM company WHERE id=$1", [req.user.company_id])).rows);
+  res.json((await pool.query("SELECT id,raison_sociale,ice FROM company ORDER BY id")).rows);
+}));
 app.post("/api/companies", requireAuth, wrap(async (req, res) => {
   if (req.user.role !== "DIRECTEUR") return res.status(403).json({ error: "Réservé au Directeur" });
   const { raison_sociale, ice } = req.body || {};
@@ -283,7 +302,12 @@ app.get("/api/payroll/runs/:id/payslips", requireAuth, wrap(async (req, res) =>
      WHERE p.run_id=$1 ORDER BY e.matricule`, [req.params.id])).rows)));
 
 // ── PDF du bulletin de paie (PDFKit, pur JS) ──
-function moneyFR(n) { return (Number(n) || 0).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " MAD"; }
+function moneyFR(n) {
+  const v = Number(n) || 0, neg = v < 0;
+  const [int, dec] = Math.abs(v).toFixed(2).split(".");
+  const grouped = int.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return (neg ? "-" : "") + grouped + "," + dec + " MAD";
+}
 const MOIS_FR = ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
 function renderBulletin(doc, ps, d) {
   const emp = d.employe || {};
@@ -386,8 +410,12 @@ const RESOURCES = {
   conges:         ["conge", ["employee_id","type","date_debut","date_fin","jours","statut","motif"]],
   affectations:   ["affectation", ["chantier_id","employee_id","role","date_debut","date_fin"]],
   evaluations:    ["evaluation", ["employee_id","date_eval","note","evaluateur","commentaire"]],
+  pointages:      ["pointage", ["employee_id","chantier_id","date_jour","heures","heures_sup"]],
+  taches:         ["tache", ["chantier_id","libelle","date_debut","date_fin","avancement","responsable","statut"]],
+  paiements:      ["paiement", ["sens","facture_id","tiers","montant","date_paiement","mode","reference"]],
+  materiel:       ["materiel", ["code","designation","type","etat","valeur_acquisition","date_acquisition","chantier_id"]],
 };
-const SCOPED_ROUTES = new Set(["chantiers", "factures", "incidents", "documents", "controles", "epi", "conges", "demandes-achat", "fournisseurs", "sous-traitants", "articles"]);
+const SCOPED_ROUTES = new Set(["chantiers", "factures", "incidents", "documents", "controles", "epi", "conges", "demandes-achat", "fournisseurs", "sous-traitants", "articles", "pointages", "taches", "paiements", "materiel"]);
 for (const [route, [table, cols]] of Object.entries(RESOURCES)) {
   const c = makeCrud(table, cols, { company: SCOPED_ROUTES.has(route) });
   app.get(`/api/${route}`, requireAuth, wrap(c.list));
@@ -427,6 +455,79 @@ app.post("/api/devis", requireAuth, wrap(async (req, res) => {
 }));
 app.delete("/api/devis/:id", requireAuth, wrap(async (req, res) => {
   await pool.query("DELETE FROM devis WHERE id=$1", [req.params.id]); res.json({ ok: true });
+}));
+// Workflow devis : changement de statut
+app.put("/api/devis/:id", requireAuth, wrap(async (req, res) => {
+  const cols = ["statut", "client", "client_ice", "objet"].filter((k) => req.body[k] !== undefined);
+  if (!cols.length) return res.status(400).json({ error: "Aucune donnée" });
+  const set = cols.map((c, i) => `${c}=$${i + 2}`).join(",");
+  const { rows } = await pool.query(`UPDATE devis SET ${set} WHERE id=$1 RETURNING *`, [req.params.id, ...cols.map((c) => req.body[c])]);
+  if (!rows[0]) return res.status(404).json({ error: "Devis introuvable" });
+  res.json(rows[0]);
+}));
+// Conversion devis → facture (en 1 clic)
+app.post("/api/devis/:id/facturer", requireAuth, wrap(async (req, res) => {
+  const d = (await pool.query("SELECT * FROM devis WHERE id=$1", [req.params.id])).rows[0];
+  if (!d) return res.status(404).json({ error: "Devis introuvable" });
+  const company = await cid(req);
+  const num = await nextNumero(pool, company, "facture");
+  const f = (await pool.query(
+    `INSERT INTO facture (numero,client,client_ice,chantier_id,devis_id,type,montant_ht,tva,montant_ttc,net_a_payer,statut,company_id)
+     VALUES ($1,$2,$3,$4,$5,'facture',$6,$7,$8,$8,'emise',$9) RETURNING *`,
+    [num, d.client, d.client_ice, d.chantier_id, d.id, d.total_ht, d.tva, d.total_ttc, company])).rows[0];
+  await pool.query("UPDATE devis SET statut='facture' WHERE id=$1", [d.id]);
+  res.status(201).json(f);
+}));
+
+// Récap pointage par chantier (heures + coût main-d'œuvre réel)
+app.get("/api/pointages-recap", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const annee = Number(req.query.annee) || new Date().getFullYear();
+  const mois = Number(req.query.mois) || (new Date().getMonth() + 1);
+  const { rows } = await pool.query(
+    `SELECT p.chantier_id, c.code, c.nom,
+            SUM(p.heures)::numeric(10,2) AS heures,
+            SUM(p.heures_sup)::numeric(10,2) AS heures_sup,
+            SUM((p.heures + p.heures_sup) * (e.salaire_base/191.0))::numeric(12,2) AS cout
+     FROM pointage p
+     JOIN employee e ON e.id=p.employee_id
+     LEFT JOIN chantier c ON c.id=p.chantier_id
+     WHERE p.company_id=$1 AND EXTRACT(YEAR FROM p.date_jour)=$2 AND EXTRACT(MONTH FROM p.date_jour)=$3
+     GROUP BY p.chantier_id, c.code, c.nom ORDER BY cout DESC NULLS LAST`,
+    [company, annee, mois]);
+  const total_heures = rows.reduce((s, r) => s + Number(r.heures || 0) + Number(r.heures_sup || 0), 0);
+  const total_cout = rows.reduce((s, r) => s + Number(r.cout || 0), 0);
+  res.json({ annee, mois, lignes: rows, total_heures: +total_heures.toFixed(2), total_cout: +total_cout.toFixed(2) });
+}));
+
+// Tableau de bord trésorerie
+app.get("/api/tresorerie/dashboard", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const q = (sql, p = []) => pool.query(sql, [company, ...p]);
+  const enc = Number((await q("SELECT COALESCE(SUM(montant),0) s FROM paiement WHERE company_id=$1 AND sens='encaissement'")).rows[0].s);
+  const dec = Number((await q("SELECT COALESCE(SUM(montant),0) s FROM paiement WHERE company_id=$1 AND sens='decaissement'")).rows[0].s);
+  // Créances = factures (hors avoir) net à payer - encaissements rattachés
+  const fact = (await q(
+    `SELECT f.id, f.numero, f.client, f.date_emission, f.type,
+            COALESCE(f.net_a_payer, f.montant_ttc) AS du,
+            COALESCE((SELECT SUM(montant) FROM paiement WHERE facture_id=f.id AND sens='encaissement'),0) AS regle
+     FROM facture f WHERE f.company_id=$1 AND f.type<>'avoir' ORDER BY f.date_emission`)).rows;
+  const echeancier = [];
+  let creances = 0;
+  const today = new Date();
+  for (const f of fact) {
+    const reste = +(Number(f.du) - Number(f.regle)).toFixed(2);
+    if (reste > 0.01) {
+      creances += reste;
+      const jours = f.date_emission ? Math.floor((today - new Date(f.date_emission)) / 86400000) : 0;
+      echeancier.push({ id: f.id, numero: f.numero, client: f.client, du: Number(f.du), regle: Number(f.regle), reste, jours_anciennete: jours, en_retard: jours > 60 });
+    }
+  }
+  echeancier.sort((a, b) => b.jours_anciennete - a.jours_anciennete);
+  res.json({
+    encaissements: +enc.toFixed(2), decaissements: +dec.toFixed(2), solde: +(enc - dec).toFixed(2),
+    creances_clients: +creances.toFixed(2), echeancier: echeancier.slice(0, 50),
+  });
 }));
 
 // Validation de congé
@@ -705,7 +806,7 @@ async function nextNumero(q, companyId, kind) {
 }
 
 app.post("/api/devis/deep", requireAuth, wrap(async (req, res) => {
-  const { numero, client: cli, chantier_id, objet, lignes = [] } = req.body || {};
+  const { numero, client: cli, client_ice, chantier_id, objet, lignes = [] } = req.body || {};
   const company = await cid(req);
   const conn = await pool.connect();
   try {
@@ -720,9 +821,9 @@ app.post("/api/devis/deep", requireAuth, wrap(async (req, res) => {
     const tva = +(ht * 0.2).toFixed(2), ttc = +(ht + tva).toFixed(2), marge = +(ht - debourse).toFixed(2);
     const numeroFinal = (numero || "").trim() || await nextNumero(conn, company, "devis");
     const d = (await conn.query(
-      `INSERT INTO devis (numero,client,chantier_id,objet,total_debourse,total_marge,total_ht,tva,total_ttc,company_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-      [numeroFinal, cli || null, chantier_id || null, objet || null, debourse.toFixed(2), marge, ht.toFixed(2), tva, ttc, company])).rows[0];
+      `INSERT INTO devis (numero,client,client_ice,chantier_id,objet,total_debourse,total_marge,total_ht,tva,total_ttc,company_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [numeroFinal, cli || null, client_ice || null, chantier_id || null, objet || null, debourse.toFixed(2), marge, ht.toFixed(2), tva, ttc, company])).rows[0];
     for (const l of calc)
       await conn.query(
         `INSERT INTO devis_ligne (devis_id,ouvrage_id,designation,quantite,debourse_unitaire,coef_marge,prix_unitaire,prix_vente,total)
@@ -748,10 +849,10 @@ app.post("/api/factures/situation", requireAuth, wrap(async (req, res) => {
   const company = await cid(req);
   const num = await nextNumero(pool, company, "facture");
   const f = (await pool.query(
-    `INSERT INTO facture (numero,client,chantier_id,devis_id,type,avancement,cumul_anterieur,
+    `INSERT INTO facture (numero,client,client_ice,chantier_id,devis_id,type,avancement,cumul_anterieur,
        montant_ht,tva,montant_ttc,rg_taux,retenue_garantie,net_a_payer,statut,company_id)
-     VALUES ($1,$2,$3,$4,'situation',$5,$6,$7,$8,$9,$10,$11,$12,'emise',$13) RETURNING *`,
-    [num, d.client, d.chantier_id, devis_id, avancement, cumul, montant_ht, tva, ttc, rg_taux, rg, net, company])).rows[0];
+     VALUES ($1,$2,$3,$4,$5,'situation',$6,$7,$8,$9,$10,$11,$12,$13,'emise',$14) RETURNING *`,
+    [num, d.client, d.client_ice, d.chantier_id, devis_id, avancement, cumul, montant_ht, tva, ttc, rg_taux, rg, net, company])).rows[0];
   res.status(201).json(f);
 }));
 
@@ -883,28 +984,71 @@ function docLetterhead(doc, co, title, numero, dateStr) {
   const lb = logoBuffer(co.logo);
   let lx = M, infoX = M;
   if (lb) { try { doc.image(lb, M, 40, { fit: [120, 58] }); infoX = M + 134; } catch { /* format non géré */ } }
-  // Coordonnées société
-  doc.fillColor("#15171C").font("Helvetica-Bold").fontSize(15).text(co.raison_sociale || "Société", infoX, 42, { width: 320 });
+  // Coordonnées société (largeur bornée pour ne pas chevaucher le cartouche)
+  const infoW = (M + W - 168) - infoX - 14;
+  doc.fillColor("#15171C").font("Helvetica-Bold").fontSize(14).text(co.raison_sociale || "Société", infoX, 42, { width: infoW });
   doc.font("Helvetica").fontSize(8.5).fillColor("#5A6473");
   const lines = [co.adresse, co.ville, [co.telephone, co.email].filter(Boolean).join(" · ")].filter(Boolean);
-  doc.text(lines.join("\n"), infoX, 62, { width: 320 });
+  doc.text(lines.join("\n"), infoX, 64, { width: infoW });
   // Cartouche document (droite)
   doc.roundedRect(M + W - 168, 40, 168, 64, 6).fill("#15171C");
-  doc.fill("#F5B301").font("Helvetica-Bold").fontSize(15).text(title, M + W - 158, 50, { width: 148, align: "right" });
+  doc.fill("#F5B301").font("Helvetica-Bold").fontSize(13).text(title, M + W - 158, 52, { width: 148, align: "right" });
   doc.fill("#fff").font("Helvetica").fontSize(9).text("N° " + (numero || "—"), M + W - 158, 72, { width: 148, align: "right" });
   doc.fillColor("#cbd5e1").fontSize(8.5).text(dateStr, M + W - 158, 86, { width: 148, align: "right" });
   // Bande hazard
   doc.rect(M, 116, W, 4).fill("#F5B301");
   return 132;
 }
-function clientBlock(doc, y, client, extra) {
+function clientBlock(doc, y, client, extra, ice, label) {
   const M = 40;
-  doc.roundedRect(M, y, 250, 56, 6).fillAndStroke("#f7f8fa", "#e3e7ec");
-  doc.fill("#5A6473").font("Helvetica-Bold").fontSize(8).text("CLIENT", M + 12, y + 9);
+  const h = ice ? 66 : 56;
+  doc.roundedRect(M, y, 250, h, 6).fillAndStroke("#f7f8fa", "#e3e7ec");
+  doc.fill("#5A6473").font("Helvetica-Bold").fontSize(8).text(label || "CLIENT", M + 12, y + 9);
   doc.fill("#15171C").font("Helvetica-Bold").fontSize(11).text(client || "—", M + 12, y + 22, { width: 226 });
-  if (extra) { doc.font("Helvetica").fontSize(8.5).fillColor("#5A6473").text(extra, M + 12, y + 38, { width: 226 }); }
-  return y + 72;
+  let yy = y + 38;
+  if (ice) { doc.font("Helvetica").fontSize(8.5).fillColor("#5A6473").text("ICE : " + ice, M + 12, yy, { width: 226 }); yy += 13; }
+  if (extra) { doc.font("Helvetica").fontSize(8.5).fillColor("#5A6473").text(extra, M + 12, yy, { width: 226 }); }
+  return y + h + 16;
 }
+// Bloc texte (attestations, PV, ordres de service…)
+function docParagraphs(doc, y, paras) {
+  const M = 40, W = 515;
+  for (const p of paras) {
+    if (!p) { y += 8; continue; }
+    const opt = typeof p === "object" ? p : { text: p };
+    doc.font(opt.bold ? "Helvetica-Bold" : "Helvetica").fontSize(opt.size || 10.5).fillColor(opt.color || "#15171C");
+    doc.text(opt.text, M, y, { width: W, align: opt.align || "left", lineGap: 3 });
+    y = doc.y + (opt.gap != null ? opt.gap : 8);
+  }
+  return y;
+}
+// Tableau générique
+function docTable(doc, y, cols, rows, opt = {}) {
+  const M = 40, W = 515;
+  const xs = []; let x = M; cols.forEach((c) => { xs.push(x); x += c.w; });
+  doc.rect(M, y, W, 20).fill("#15171C");
+  doc.fill("#fff").font("Helvetica-Bold").fontSize(8.5);
+  cols.forEach((c, i) => doc.text(c.h, xs[i] + 5, y + 6, { width: c.w - 8, align: c.align || "left" }));
+  y += 20;
+  doc.font("Helvetica").fontSize(8.5);
+  rows.forEach((r, ri) => {
+    const rh = opt.rh || 18;
+    if (ri % 2) { doc.rect(M, y, W, rh).fill("#f7f8fa"); }
+    doc.fillColor("#15171C").font("Helvetica").fontSize(8.5);
+    cols.forEach((c, i) => doc.text(r[i] == null ? "" : String(r[i]), xs[i] + 5, y + 5, { width: c.w - 8, align: c.align || "left" }));
+    y += rh;
+  });
+  doc.rect(M, y, W, 0.6).fill("#e3e7ec");
+  return y + 8;
+}
+function newDoc(res, filename) {
+  const doc = new PDFDocument({ size: "A4", margin: 40 });
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  doc.pipe(res);
+  return doc;
+}
+const getEmp = async (id) => (await pool.query("SELECT * FROM employee WHERE id=$1", [id])).rows[0];
 function docTotals(doc, y, rows) {
   const M = 40, W = 515, bx = M + W - 230;
   for (const [lbl, val, strong] of rows) {
@@ -938,7 +1082,7 @@ app.get("/api/devis/:id/pdf", requireAuth, wrap(async (req, res) => {
   res.setHeader("Content-Disposition", `attachment; filename="devis-${d.numero || d.id}.pdf"`);
   doc.pipe(res);
   let y = docLetterhead(doc, co, "DEVIS", d.numero || d.id, new Date(d.created_at || Date.now()).toLocaleDateString("fr-FR"));
-  y = clientBlock(doc, y + 6, d.client, d.objet);
+  y = clientBlock(doc, y + 6, d.client, d.objet, d.client_ice);
   // Tableau
   const M = 40, W = 515; const cols = [M + 8, M + 285, M + 350, M + 430];
   doc.rect(M, y, W, 22).fill("#15171C");
@@ -966,27 +1110,488 @@ app.get("/api/factures/:id/pdf", requireAuth, wrap(async (req, res) => {
   const f = (await pool.query("SELECT * FROM facture WHERE id=$1", [req.params.id])).rows[0];
   if (!f) return res.status(404).json({ error: "Facture introuvable" });
   const co = await getCompany(f.company_id || (await cid(req)));
-  const isSit = f.type === "situation";
-  const doc = new PDFDocument({ size: "A4", margin: 40 });
-  res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", `attachment; filename="${isSit ? "situation" : "facture"}-${f.numero || f.id}.pdf"`);
-  doc.pipe(res);
-  let y = docLetterhead(doc, co, isSit ? "SITUATION" : "FACTURE", f.numero || f.id, new Date(f.date_emission || Date.now()).toLocaleDateString("fr-FR"));
-  y = clientBlock(doc, y + 6, f.client, isSit && f.avancement ? `Avancement cumulé : ${f.avancement} %` : null);
-  const ht = Number(f.montant_ht), tva = Number(f.tva), ttc = Number(f.montant_ttc), rg = Number(f.retenue_garantie) || 0, net = Number(f.net_a_payer) || ttc;
+  const titles = { situation: "SITUATION", acompte: "FACTURE D'ACOMPTE", avoir: "AVOIR", facture: "FACTURE" };
+  const title = titles[f.type] || "FACTURE";
+  const isSit = f.type === "situation", isAvoir = f.type === "avoir";
+  const doc = newDoc(res, `${(f.type || "facture")}-${f.numero || f.id}.pdf`);
+  let y = docLetterhead(doc, co, title, f.numero || f.id, new Date(f.date_emission || Date.now()).toLocaleDateString("fr-FR"));
+  const extra = isSit && f.avancement ? `Avancement cumulé : ${f.avancement} %` : (isAvoir && f.motif ? `Motif : ${f.motif}` : null);
+  y = clientBlock(doc, y + 6, f.client, extra, f.client_ice);
+  const sign = isAvoir ? -1 : 1;
+  const ht = Math.abs(Number(f.montant_ht)), tva = Math.abs(Number(f.tva)), ttc = Math.abs(Number(f.montant_ttc)), rg = Number(f.retenue_garantie) || 0, net = Number(f.net_a_payer) || ttc;
   const M = 40, W = 515;
   doc.rect(M, y, W, 22).fill("#15171C");
   doc.fill("#fff").font("Helvetica-Bold").fontSize(9).text("DÉSIGNATION", M + 8, y + 7).text("MONTANT HT", M + W - 130, y + 7, { width: 122, align: "right" });
   y += 22;
   doc.font("Helvetica").fontSize(9).fillColor("#15171C");
-  const desc = isSit ? `Travaux exécutés — situation à ${f.avancement || 0} % (déduction des situations antérieures)` : "Prestations / travaux";
-  doc.text(desc, M + 8, y + 6, { width: 340 }).text(moneyFR(ht).replace(" MAD", ""), M + W - 130, y + 6, { width: 122, align: "right" });
+  const desc = isSit ? `Travaux exécutés — situation à ${f.avancement || 0} % (déduction des situations antérieures)`
+    : f.type === "acompte" ? "Acompte sur travaux à venir"
+    : isAvoir ? (f.motif || "Avoir / note de crédit") : "Prestations / travaux";
+  doc.text(desc, M + 8, y + 6, { width: 340 }).text((isAvoir ? "-" : "") + moneyFR(ht).replace(" MAD", ""), M + W - 130, y + 6, { width: 122, align: "right" });
   y += 30; doc.rect(M, y, W, 0.6).fill("#e3e7ec"); y += 14;
-  const rows = [["Montant HT", ht], ["TVA (20%)", tva], ["Montant TTC", ttc, true]];
+  const s = (v) => sign * v;
+  const rows = [["Montant HT", s(ht)], ["TVA (20%)", s(tva)], [isAvoir ? "MONTANT TTC AVOIR" : "Montant TTC", s(ttc), true]];
   if (rg > 0) { rows.push(["Retenue de garantie", -rg]); rows.push(["NET À PAYER", net, true]); }
   y = docTotals(doc, y, rows);
-  docFooter(doc, co, isSit ? `Net à payer : ${moneyFR(net)}. Retenue de garantie ${f.rg_taux || 0} % conservée.` : `Montant à régler : ${moneyFR(net)}.`);
+  const mention = isSit ? `Net à payer : ${moneyFR(net)}. Retenue de garantie ${f.rg_taux || 0} % conservée jusqu'à réception définitive.`
+    : isAvoir ? `Avoir de ${moneyFR(ttc)} TTC à imputer sur facture${f.ref_facture_id ? " n° réf. " + f.ref_facture_id : ""}.`
+    : `Montant à régler : ${moneyFR(net)}. Paiement à réception. Tout retard expose à des pénalités (loi n° 69-21 sur les délais de paiement).`;
+  docFooter(doc, co, mention);
   doc.end();
+}));
+
+// ══════════════ NOUVEAUX DOCUMENTS ══════════════
+
+// ── Facture d'acompte (depuis un devis) ──
+app.post("/api/factures/acompte", requireAuth, wrap(async (req, res) => {
+  const devis_id = Number(req.body?.devis_id), pct = Number(req.body?.pct) || 30;
+  const d = (await pool.query("SELECT * FROM devis WHERE id=$1", [devis_id])).rows[0];
+  if (!d) return res.status(404).json({ error: "Devis introuvable" });
+  const company = await cid(req);
+  const ht = +(Number(d.total_ht) * pct / 100).toFixed(2), tva = +(ht * 0.2).toFixed(2), ttc = +(ht + tva).toFixed(2);
+  const num = await nextNumero(pool, company, "facture");
+  const f = (await pool.query(
+    `INSERT INTO facture (numero,client,client_ice,chantier_id,devis_id,type,montant_ht,tva,montant_ttc,net_a_payer,statut,company_id)
+     VALUES ($1,$2,$3,$4,$5,'acompte',$6,$7,$8,$8,'emise',$9) RETURNING *`,
+    [num, d.client, d.client_ice, d.chantier_id, devis_id, ht, tva, ttc, company])).rows[0];
+  res.status(201).json(f);
+}));
+
+// ── Avoir / note de crédit (depuis une facture) ──
+app.post("/api/factures/avoir", requireAuth, wrap(async (req, res) => {
+  const facture_id = Number(req.body?.facture_id), motif = (req.body?.motif || "").trim();
+  const o = (await pool.query("SELECT * FROM facture WHERE id=$1", [facture_id])).rows[0];
+  if (!o) return res.status(404).json({ error: "Facture introuvable" });
+  const company = await cid(req);
+  const num = await nextNumero(pool, company, "facture");
+  const f = (await pool.query(
+    `INSERT INTO facture (numero,client,client_ice,chantier_id,type,montant_ht,tva,montant_ttc,net_a_payer,ref_facture_id,motif,statut,company_id)
+     VALUES ($1,$2,$3,$4,'avoir',$5,$6,$7,$7,$8,$9,'emise',$10) RETURNING *`,
+    [num, o.client, o.client_ice, o.chantier_id, o.montant_ht, o.tva, o.montant_ttc, facture_id, motif || "Annulation / correction", company])).rows[0];
+  res.status(201).json(f);
+}));
+
+// ── Bon de commande fournisseur (PDF) ──
+app.get("/api/commandes/:id/pdf", requireAuth, wrap(async (req, res) => {
+  const bc = (await pool.query("SELECT * FROM bon_commande WHERE id=$1", [req.params.id])).rows[0];
+  if (!bc) return res.status(404).json({ error: "Introuvable" });
+  const lignes = (await pool.query("SELECT * FROM bon_commande_ligne WHERE commande_id=$1 ORDER BY id", [bc.id])).rows;
+  const four = bc.fournisseur_id ? (await pool.query("SELECT * FROM fournisseur WHERE id=$1", [bc.fournisseur_id])).rows[0] : null;
+  const co = await getCompany(bc.company_id || (await cid(req)));
+  const doc = newDoc(res, `bon-commande-${bc.numero || bc.id}.pdf`);
+  let y = docLetterhead(doc, co, "COMMANDE", bc.numero || bc.id, new Date(bc.date_commande || bc.created_at || Date.now()).toLocaleDateString("fr-FR"));
+  y = clientBlock(doc, y + 6, four ? four.raison_sociale : "Fournisseur", four && four.telephone ? "Tél : " + four.telephone : null, four ? four.ice : null, "FOURNISSEUR");
+  let total = 0;
+  const rows = lignes.map((l) => { const t = (Number(l.quantite) || 0) * (Number(l.prix_unitaire) || 0); total += t; return [l.designation || "", String(l.quantite), moneyFR(l.prix_unitaire).replace(" MAD", ""), moneyFR(t).replace(" MAD", "")]; });
+  y = docTable(doc, y, [{ h: "DÉSIGNATION", w: 270 }, { h: "QTÉ", w: 60, align: "right" }, { h: "P.U.", w: 90, align: "right" }, { h: "TOTAL", w: 95, align: "right" }], rows);
+  y = docTotals(doc, y + 6, [["TOTAL HT", total], ["TVA (20%)", +(total * 0.2).toFixed(2)], ["TOTAL TTC", +(total * 1.2).toFixed(2), true]]);
+  docFooter(doc, co, "Bon de commande valant engagement. Merci d'accuser réception et de respecter les délais convenus.");
+  doc.end();
+}));
+
+// ── Bon de réception (PDF, depuis une commande) ──
+app.get("/api/commandes/:id/reception/pdf", requireAuth, wrap(async (req, res) => {
+  const bc = (await pool.query("SELECT * FROM bon_commande WHERE id=$1", [req.params.id])).rows[0];
+  if (!bc) return res.status(404).json({ error: "Introuvable" });
+  const lignes = (await pool.query("SELECT * FROM bon_commande_ligne WHERE commande_id=$1 ORDER BY id", [bc.id])).rows;
+  const four = bc.fournisseur_id ? (await pool.query("SELECT * FROM fournisseur WHERE id=$1", [bc.fournisseur_id])).rows[0] : null;
+  const co = await getCompany(bc.company_id || (await cid(req)));
+  const doc = newDoc(res, `bon-reception-${bc.numero || bc.id}.pdf`);
+  let y = docLetterhead(doc, co, "RÉCEPTION", bc.numero || bc.id, new Date(bc.date_reception || Date.now()).toLocaleDateString("fr-FR"));
+  y = clientBlock(doc, y + 6, four ? four.raison_sociale : "Fournisseur", "Réf. commande : " + (bc.numero || bc.id), four ? four.ice : null, "FOURNISSEUR");
+  const rows = lignes.map((l) => [l.designation || "", String(l.quantite), "", ""]);
+  y = docTable(doc, y, [{ h: "DÉSIGNATION", w: 270 }, { h: "QTÉ CMD", w: 75, align: "right" }, { h: "QTÉ REÇUE", w: 85, align: "right" }, { h: "OBSERV.", w: 85 }], rows, { rh: 22 });
+  y = docParagraphs(doc, y + 16, [
+    { text: "Conformité de la livraison : ☐ Conforme   ☐ Réserves (préciser ci-dessous)", size: 10 },
+    { text: "Réserves / observations : ............................................................................................................", size: 10, gap: 24 },
+    { text: "Réceptionné par : ...............................................     Signature : ...............................................", size: 10 },
+  ]);
+  docFooter(doc, co, "Document attestant la réception des fournitures sur chantier. À conserver pour le rapprochement avec la facture.");
+  doc.end();
+}));
+
+// ── PV de réception de travaux (PDF, depuis un chantier) ──
+app.get("/api/chantiers/:id/pv/pdf", requireAuth, wrap(async (req, res) => {
+  const c = (await pool.query("SELECT * FROM chantier WHERE id=$1", [req.params.id])).rows[0];
+  if (!c) return res.status(404).json({ error: "Chantier introuvable" });
+  const co = await getCompany(c.company_id || (await cid(req)));
+  const doc = newDoc(res, `pv-reception-${c.code || c.id}.pdf`);
+  let y = docLetterhead(doc, co, "PV TRAVAUX", c.code || c.id, new Date().toLocaleDateString("fr-FR"));
+  y = clientBlock(doc, y + 6, c.client || "—", c.ville ? "Lieu : " + c.ville : null, null, "MAÎTRE D'OUVRAGE");
+  y = docParagraphs(doc, y + 6, [
+    { text: "PROCÈS-VERBAL DE RÉCEPTION DES TRAVAUX", bold: true, size: 13, align: "center", gap: 14 },
+    { text: `Projet / chantier : ${c.nom || "—"} (réf. ${c.code || "—"}).`, size: 10.5 },
+    { text: `Le maître d'ouvrage et l'entreprise ${co.raison_sociale}, après visite contradictoire des ouvrages exécutés, conviennent de ce qui suit :`, size: 10.5, gap: 12 },
+    { text: "Décision de réception :", bold: true, size: 11 },
+    { text: "☐ Réception prononcée SANS réserve", size: 10.5, gap: 2 },
+    { text: "☐ Réception prononcée AVEC réserves (détaillées ci-dessous)", size: 10.5, gap: 2 },
+    { text: "☐ Réception refusée", size: 10.5, gap: 14 },
+    { text: "Réserves éventuelles :", bold: true, size: 11 },
+    { text: ".................................................................................................................................................", size: 10.5, gap: 4 },
+    { text: ".................................................................................................................................................", size: 10.5, gap: 4 },
+    { text: ".................................................................................................................................................", size: 10.5, gap: 24 },
+    { text: "Date de prise d'effet de la réception : ............................     Délai de levée des réserves : ............................", size: 10.5, gap: 30 },
+  ]);
+  docParagraphs(doc, y, [{ text: "Le Maître d'ouvrage                                                          L'Entreprise", bold: true, size: 10.5 }]);
+  docFooter(doc, co, "La réception marque le point de départ des garanties légales et, le cas échéant, la libération de la retenue de garantie.");
+  doc.end();
+}));
+
+// ── Ordre de service (PDF, depuis un chantier) ──
+app.get("/api/chantiers/:id/os/pdf", requireAuth, wrap(async (req, res) => {
+  const c = (await pool.query("SELECT * FROM chantier WHERE id=$1", [req.params.id])).rows[0];
+  if (!c) return res.status(404).json({ error: "Chantier introuvable" });
+  const co = await getCompany(c.company_id || (await cid(req)));
+  const doc = newDoc(res, `ordre-service-${c.code || c.id}.pdf`);
+  let y = docLetterhead(doc, co, "ORDRE SERVICE", c.code || c.id, new Date().toLocaleDateString("fr-FR"));
+  y = clientBlock(doc, y + 6, c.client || "—", "Chantier : " + (c.nom || "—"), null, "DESTINATAIRE");
+  y = docParagraphs(doc, y + 6, [
+    { text: "ORDRE DE SERVICE", bold: true, size: 13, align: "center", gap: 14 },
+    { text: `Objet : ${c.nom || "—"} (réf. chantier ${c.code || "—"}).`, size: 10.5, gap: 12 },
+    { text: "Par le présent ordre de service, il est prescrit :", size: 10.5, gap: 8 },
+    { text: "☐ De DÉMARRER les travaux à compter du : ............................", size: 10.5, gap: 4 },
+    { text: "☐ De SUSPENDRE les travaux à compter du : ............................", size: 10.5, gap: 4 },
+    { text: "☐ De REPRENDRE les travaux à compter du : ............................", size: 10.5, gap: 14 },
+    { text: "Instructions particulières :", bold: true, size: 11 },
+    { text: ".................................................................................................................................................", size: 10.5, gap: 4 },
+    { text: ".................................................................................................................................................", size: 10.5, gap: 30 },
+    { text: "Fait à ........................, le ........................                                   Signature et cachet :", size: 10.5 },
+  ]);
+  docFooter(doc, co, "Document contractuel. Le délai d'exécution court à compter de la date indiquée dans le présent ordre.");
+  doc.end();
+}));
+
+// ── Documents RH (attestations, solde de tout compte) ──
+function rhHeader(doc, co, title) {
+  return docLetterhead(doc, co, title, "", new Date().toLocaleDateString("fr-FR"));
+}
+app.get("/api/employees/:id/:doc(attestation-travail|attestation-salaire|solde-tout-compte)/pdf", requireAuth, wrap(async (req, res) => {
+  const e = await getEmp(req.params.id);
+  if (!e) return res.status(404).json({ error: "Salarié introuvable" });
+  const co = await getCompany(e.company_id || (await cid(req)));
+  const kind = req.params.doc;
+  const dEmb = e.date_embauche ? new Date(e.date_embauche).toLocaleDateString("fr-FR") : "............";
+  let title = "ATTESTATION", filename = kind, body = [];
+  if (kind === "attestation-travail") {
+    title = "ATTESTATION";
+    body = [
+      { text: "ATTESTATION DE TRAVAIL", bold: true, size: 14, align: "center", gap: 18 },
+      { text: `Nous soussignés, ${co.raison_sociale}, attestons que :`, size: 11, gap: 12 },
+      { text: `M./Mme ${e.nom}, titulaire de la CIN n° ${e.cin || "............"}, est employé(e) au sein de notre société en qualité de ${e.poste || "............"} depuis le ${dEmb}.`, size: 11, gap: 12 },
+      { text: "La présente attestation est délivrée à l'intéressé(e) pour servir et valoir ce que de droit.", size: 11, gap: 40 },
+    ];
+  } else if (kind === "attestation-salaire") {
+    const ps = (await pool.query("SELECT * FROM payslip WHERE employee_id=$1 ORDER BY periode DESC LIMIT 1", [e.id])).rows[0];
+    const brut = ps ? Number(ps.brut) : Number(e.salaire_base), net = ps ? Number(ps.net) : null;
+    title = "ATTESTATION";
+    body = [
+      { text: "ATTESTATION DE SALAIRE", bold: true, size: 14, align: "center", gap: 18 },
+      { text: `Nous soussignés, ${co.raison_sociale}, attestons que M./Mme ${e.nom} (CIN ${e.cin || "............"}), ${e.poste || "............"}, perçoit la rémunération suivante :`, size: 11, gap: 12 },
+      { text: `• Salaire brut mensuel : ${moneyFR(brut)}`, size: 11, gap: 4 },
+      net != null ? { text: `• Salaire net mensuel : ${moneyFR(net)}`, size: 11, gap: 12 } : { text: "", gap: 4 },
+      { text: "Attestation délivrée pour servir et valoir ce que de droit.", size: 11, gap: 40 },
+    ];
+  } else {
+    title = "SOLDE STC";
+    body = [
+      { text: "REÇU POUR SOLDE DE TOUT COMPTE", bold: true, size: 14, align: "center", gap: 18 },
+      { text: `Je soussigné(e) M./Mme ${e.nom} (CIN ${e.cin || "............"}), ${e.poste || "............"}, reconnais avoir reçu de ${co.raison_sociale} la somme de ............................ MAD,`, size: 11, gap: 8 },
+      { text: "pour solde de tout compte, en règlement de l'ensemble des salaires, indemnités et accessoires de toute nature qui m'étaient dus au titre de l'exécution et de la cessation de mon contrat de travail.", size: 11, gap: 12 },
+      { text: "Établi en double exemplaire. Le reçu pour solde de tout compte peut être dénoncé dans les 60 jours suivant sa signature.", size: 10, color: "#5A6473", gap: 40 },
+    ];
+  }
+  const doc = newDoc(res, `${filename}-${e.matricule || e.id}.pdf`);
+  let y = rhHeader(doc, co, title);
+  y = clientBlock(doc, y + 6, e.nom, "Matricule : " + (e.matricule || "—"), null, "SALARIÉ");
+  y = docParagraphs(doc, y + 10, body);
+  docParagraphs(doc, Math.max(y, 600), [{ text: `Fait à ${co.ville || "............"}, le ${new Date().toLocaleDateString("fr-FR")}.`, size: 10.5, gap: 24 }, { text: "Signature et cachet :", bold: true, size: 10.5 }]);
+  docFooter(doc, co, "");
+  doc.end();
+}));
+
+// ── Documents de paie collective (depuis un run) ──
+async function runData(req) {
+  const run = (await pool.query("SELECT * FROM payroll_run WHERE id=$1", [req.params.id])).rows[0];
+  if (!run) return null;
+  const slips = (await pool.query(
+    `SELECT p.*, e.matricule, e.nom, e.cin FROM payslip p JOIN employee e ON e.id=p.employee_id WHERE p.run_id=$1 ORDER BY e.matricule`, [run.id])).rows;
+  const co = await getCompany((await cid(req)));
+  return { run, slips, co };
+}
+const MOISFR = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
+app.get("/api/payroll/runs/:id/virement/pdf", requireAuth, wrap(async (req, res) => {
+  const data = await runData(req); if (!data) return res.status(404).json({ error: "Période introuvable" });
+  const { run, slips, co } = data;
+  const doc = newDoc(res, `ordre-virement-${run.periode_annee}-${run.periode_mois}.pdf`);
+  let y = docLetterhead(doc, co, "VIREMENT", `${run.periode_annee}-${String(run.periode_mois).padStart(2, "0")}`, new Date().toLocaleDateString("fr-FR"));
+  y = docParagraphs(doc, y + 4, [{ text: `Ordre de virement des salaires — ${MOISFR[run.periode_mois - 1]} ${run.periode_annee}`, bold: true, size: 12, gap: 10 }]);
+  let total = 0;
+  const rows = slips.map((s) => { total += Number(s.net); return [s.matricule, s.nom, "", moneyFR(s.net).replace(" MAD", "")]; });
+  y = docTable(doc, y, [{ h: "MATRICULE", w: 80 }, { h: "BÉNÉFICIAIRE", w: 200 }, { h: "RIB", w: 130 }, { h: "NET (MAD)", w: 105, align: "right" }], rows);
+  y = docTotals(doc, y + 6, [["TOTAL À VIRER", total, true]]);
+  docFooter(doc, co, `Veuillez procéder au virement de ${moneyFR(total)} au profit des bénéficiaires ci-dessus, par le débit de notre compte ${co.rib || "............"}.`);
+  doc.end();
+}));
+app.get("/api/payroll/runs/:id/livre/pdf", requireAuth, wrap(async (req, res) => {
+  const data = await runData(req); if (!data) return res.status(404).json({ error: "Période introuvable" });
+  const { run, slips, co } = data;
+  const doc = newDoc(res, `livre-paie-${run.periode_annee}-${run.periode_mois}.pdf`);
+  let y = docLetterhead(doc, co, "LIVRE PAIE", `${run.periode_annee}-${String(run.periode_mois).padStart(2, "0")}`, new Date().toLocaleDateString("fr-FR"));
+  y = docParagraphs(doc, y + 4, [{ text: `Livre de paie — ${MOISFR[run.periode_mois - 1]} ${run.periode_annee}`, bold: true, size: 12, gap: 10 }]);
+  let tb = 0, tc = 0, ti = 0, tn = 0, tk = 0;
+  const rows = slips.map((s) => {
+    tb += +s.brut; tc += +s.cnss; ti += +s.ir; tn += +s.net; tk += +s.cout_total;
+    return [s.matricule, s.nom, moneyFR(s.brut).replace(" MAD", ""), moneyFR(s.cnss).replace(" MAD", ""), moneyFR(s.ir).replace(" MAD", ""), moneyFR(s.net).replace(" MAD", "")];
+  });
+  rows.push(["", "TOTAUX", moneyFR(tb).replace(" MAD", ""), moneyFR(tc).replace(" MAD", ""), moneyFR(ti).replace(" MAD", ""), moneyFR(tn).replace(" MAD", "")]);
+  y = docTable(doc, y, [{ h: "MAT.", w: 55 }, { h: "NOM", w: 150 }, { h: "BRUT", w: 78, align: "right" }, { h: "CNSS/AMO", w: 78, align: "right" }, { h: "IR", w: 70, align: "right" }, { h: "NET", w: 84, align: "right" }], rows);
+  docFooter(doc, co, `Coût employeur total de la période : ${moneyFR(tk)}.`);
+  doc.end();
+}));
+app.get("/api/payroll/runs/:id/bds/pdf", requireAuth, wrap(async (req, res) => {
+  const data = await runData(req); if (!data) return res.status(404).json({ error: "Période introuvable" });
+  const { run, slips, co } = data;
+  const doc = newDoc(res, `bordereau-cnss-${run.periode_annee}-${run.periode_mois}.pdf`);
+  let y = docLetterhead(doc, co, "BORDEREAU", `${run.periode_annee}-${String(run.periode_mois).padStart(2, "0")}`, new Date().toLocaleDateString("fr-FR"));
+  y = docParagraphs(doc, y + 4, [{ text: `Bordereau de déclaration des salaires (CNSS) — ${MOISFR[run.periode_mois - 1]} ${run.periode_annee}`, bold: true, size: 11.5, gap: 2 }, { text: `Affiliation CNSS : ${co.cnss || "............"}`, size: 9.5, color: "#5A6473", gap: 10 }]);
+  let tbrut = 0, tplaf = 0;
+  const rows = slips.map((s) => {
+    const brut = Number(s.brut), plaf = Math.min(brut, 6000); tbrut += brut; tplaf += plaf;
+    return [s.matricule, s.nom, "26", moneyFR(brut).replace(" MAD", ""), moneyFR(plaf).replace(" MAD", "")];
+  });
+  rows.push(["", "TOTAUX", "", moneyFR(tbrut).replace(" MAD", ""), moneyFR(tplaf).replace(" MAD", "")]);
+  y = docTable(doc, y, [{ h: "N° CNSS / MAT.", w: 95 }, { h: "NOM & PRÉNOM", w: 175 }, { h: "JOURS", w: 50, align: "right" }, { h: "SAL. RÉEL", w: 95, align: "right" }, { h: "SAL. PLAFONNÉ", w: 100, align: "right" }], rows);
+  docFooter(doc, co, "Document préparatoire à la télédéclaration Damancom. Salaire plafonné à 6 000 MAD pour les prestations sociales. À déposer avant le 10 du mois suivant.");
+  doc.end();
+}));
+
+// ══════════════ PARC MATÉRIEL ══════════════
+app.post("/api/materiel/:id/affecter", requireAuth, wrap(async (req, res) => {
+  const { chantier_id, etat } = req.body || {};
+  const { rows } = await pool.query("UPDATE materiel SET chantier_id=$2, etat=COALESCE($3,etat) WHERE id=$1 RETURNING *", [req.params.id, chantier_id || null, etat || null]);
+  if (!rows[0]) return res.status(404).json({ error: "Introuvable" });
+  res.json(rows[0]);
+}));
+app.get("/api/materiel/:id/maintenance", requireAuth, wrap(async (req, res) =>
+  res.json((await pool.query("SELECT * FROM materiel_maintenance WHERE materiel_id=$1 ORDER BY date_maintenance DESC", [req.params.id])).rows)));
+app.post("/api/materiel/:id/maintenance", requireAuth, wrap(async (req, res) => {
+  const { date_maintenance, type, cout, note } = req.body || {};
+  const company = await cid(req);
+  const m = (await pool.query("INSERT INTO materiel_maintenance (materiel_id,date_maintenance,type,cout,note,company_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *",
+    [req.params.id, date_maintenance || new Date(), type || null, cout || 0, note || null, company])).rows[0];
+  await pool.query("UPDATE materiel SET etat='maintenance' WHERE id=$1", [req.params.id]);
+  res.status(201).json(m);
+}));
+
+// ══════════════ RAPPORTS DE CHANTIER (avec photos) ══════════════
+app.get("/api/rapports", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const where = req.query.chantier_id ? "AND r.chantier_id=$2" : "";
+  const params = req.query.chantier_id ? [company, req.query.chantier_id] : [company];
+  const rows = (await pool.query(
+    `SELECT r.id, r.chantier_id, r.date_rapport, r.meteo, r.effectif, r.avancement, r.observations,
+            c.code AS chantier_code, c.nom AS chantier_nom,
+            (SELECT count(*)::int FROM rapport_photo WHERE rapport_id=r.id) AS nb_photos
+     FROM rapport_chantier r LEFT JOIN chantier c ON c.id=r.chantier_id
+     WHERE r.company_id=$1 ${where} ORDER BY r.date_rapport DESC, r.id DESC`, params)).rows;
+  res.json(rows);
+}));
+app.get("/api/rapports/:id", requireAuth, wrap(async (req, res) => {
+  const r = (await pool.query("SELECT * FROM rapport_chantier WHERE id=$1", [req.params.id])).rows[0];
+  if (!r) return res.status(404).json({ error: "Introuvable" });
+  r.photos = (await pool.query("SELECT id, legende, data FROM rapport_photo WHERE rapport_id=$1 ORDER BY id", [req.params.id])).rows;
+  res.json(r);
+}));
+app.post("/api/rapports", requireAuth, wrap(async (req, res) => {
+  const { chantier_id, date_rapport, meteo, effectif, avancement, observations, photos = [] } = req.body || {};
+  const company = await cid(req);
+  const conn = await pool.connect();
+  try {
+    await conn.query("BEGIN");
+    const r = (await conn.query(
+      `INSERT INTO rapport_chantier (chantier_id,date_rapport,meteo,effectif,avancement,observations,company_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [chantier_id || null, date_rapport || new Date(), meteo || null, effectif || 0, avancement || null, observations || null, company])).rows[0];
+    for (const p of (photos || []).slice(0, 12))
+      await conn.query("INSERT INTO rapport_photo (rapport_id,data,legende) VALUES ($1,$2,$3)", [r.id, p.data || null, p.legende || null]);
+    await conn.query("COMMIT"); res.status(201).json(r);
+  } catch (e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
+}));
+app.delete("/api/rapports/:id", requireAuth, wrap(async (req, res) => { await pool.query("DELETE FROM rapport_chantier WHERE id=$1", [req.params.id]); res.json({ ok: true }); }));
+app.get("/api/rapports/:id/pdf", requireAuth, wrap(async (req, res) => {
+  const r = (await pool.query("SELECT * FROM rapport_chantier WHERE id=$1", [req.params.id])).rows[0];
+  if (!r) return res.status(404).json({ error: "Introuvable" });
+  const ch = r.chantier_id ? (await pool.query("SELECT * FROM chantier WHERE id=$1", [r.chantier_id])).rows[0] : null;
+  const photos = (await pool.query("SELECT * FROM rapport_photo WHERE rapport_id=$1 ORDER BY id", [req.params.id])).rows;
+  const co = await getCompany(r.company_id || (await cid(req)));
+  const doc = newDoc(res, `rapport-${ch ? ch.code : r.id}.pdf`);
+  let y = docLetterhead(doc, co, "RAPPORT", ch ? ch.code : r.id, new Date(r.date_rapport).toLocaleDateString("fr-FR"));
+  y = clientBlock(doc, y + 6, ch ? ch.nom : "Chantier", ch && ch.ville ? "Lieu : " + ch.ville : null, null, "CHANTIER");
+  y = docParagraphs(doc, y + 4, [
+    { text: `Météo : ${r.meteo || "—"}     ·     Effectif présent : ${r.effectif || 0}`, size: 10.5, gap: 10 },
+    { text: "Avancement", bold: true, size: 11, gap: 2 }, { text: r.avancement || "—", size: 10.5, gap: 10 },
+    { text: "Observations", bold: true, size: 11, gap: 2 }, { text: r.observations || "—", size: 10.5, gap: 12 },
+  ]);
+  if (photos.length) {
+    doc.font("Helvetica-Bold").fontSize(11).fillColor("#15171C").text("Photos", 40, y); y += 16;
+    const M = 40, W = 515, gp = 10, cw = (W - gp) / 2, chh = 140; let i = 0;
+    for (const p of photos) {
+      const buf = logoBuffer(p.data); if (!buf) continue;
+      const col = i % 2, x = M + col * (cw + gp);
+      if (col === 0 && y + chh > 770) { doc.addPage(); y = 50; }
+      try { doc.image(buf, x, y, { fit: [cw, chh - 16], align: "center" }); } catch { /* image illisible */ }
+      if (p.legende) doc.font("Helvetica").fontSize(8).fillColor("#5A6473").text(p.legende, x, y + chh - 13, { width: cw });
+      if (col === 1) y += chh;
+      i++;
+    }
+  }
+  docFooter(doc, co, "Rapport de visite de chantier — document interne.");
+  doc.end();
+}));
+
+// ══════════════ CENTRE D'ALERTES ══════════════
+app.get("/api/alertes", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const one = async (sql) => Number((await pool.query(sql, [company])).rows[0].n);
+  const out = [];
+  const add = (n, type, sev, view, msg) => { if (n > 0) out.push({ type, severite: sev, view, message: msg(n), count: n }); };
+  add(await one("SELECT count(*)::int n FROM article WHERE company_id=$1 AND stock < seuil"), "stock", "alerte", "articles", (n) => `${n} article(s) sous le seuil de stock`);
+  add(await one("SELECT count(*)::int n FROM incident WHERE company_id=$1 AND statut<>'clos'"), "securite", "alerte", "incidents", (n) => `${n} incident(s) de sécurité ouvert(s)`);
+  add(await one("SELECT count(*)::int n FROM conge WHERE company_id=$1 AND statut='en_attente'"), "conges", "info", "conges", (n) => `${n} demande(s) de congé en attente`);
+  add(await one("SELECT count(*)::int n FROM materiel WHERE company_id=$1 AND etat IN ('maintenance','hs')"), "materiel", "info", "materiel", (n) => `${n} matériel(s) en maintenance ou hors service`);
+  add(await one("SELECT count(*)::int n FROM tache WHERE company_id=$1 AND date_fin < current_date AND avancement < 100 AND statut<>'termine'"), "planning", "alerte", "planning", (n) => `${n} tâche(s) de planning en retard`);
+  add(await one(`SELECT count(*)::int n FROM facture f WHERE f.company_id=$1 AND f.type<>'avoir'
+       AND f.date_emission < current_date - interval '60 days'
+       AND COALESCE(f.net_a_payer,f.montant_ttc) > COALESCE((SELECT SUM(montant) FROM paiement WHERE facture_id=f.id AND sens='encaissement'),0)`),
+    "tresorerie", "alerte", "tresorerie", (n) => `${n} facture(s) en retard de paiement (> 60 j)`);
+  res.json({ total: out.reduce((s, a) => s + a.count, 0), alertes: out });
+}));
+
+// ══════════════ COMPTABILITÉ / TVA ══════════════
+app.get("/api/compta", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const annee = Number(req.query.annee) || new Date().getFullYear();
+  const mois = Number(req.query.mois) || (new Date().getMonth() + 1);
+  const ventes = (await pool.query(
+    `SELECT id,numero,client,date_emission,type,montant_ht,tva,montant_ttc FROM facture
+     WHERE company_id=$1 AND EXTRACT(YEAR FROM date_emission)=$2 AND EXTRACT(MONTH FROM date_emission)=$3
+     ORDER BY date_emission`, [company, annee, mois])).rows;
+  const achats = (await pool.query(
+    `SELECT bc.id,bc.numero,bc.date_commande,bc.montant, f.raison_sociale AS fournisseur FROM bon_commande bc
+     LEFT JOIN fournisseur f ON f.id=bc.fournisseur_id
+     WHERE bc.company_id=$1 AND EXTRACT(YEAR FROM bc.date_commande)=$2 AND EXTRACT(MONTH FROM bc.date_commande)=$3
+     ORDER BY bc.date_commande`, [company, annee, mois])).rows;
+  const sgn = (t) => t === "avoir" ? -1 : 1;
+  const tva_collectee = +ventes.reduce((s, v) => s + sgn(v.type) * Number(v.tva || 0), 0).toFixed(2);
+  const ca_ht = +ventes.reduce((s, v) => s + sgn(v.type) * Number(v.montant_ht || 0), 0).toFixed(2);
+  const tva_deductible = +achats.reduce((s, a) => s + Number(a.montant || 0) * 0.2, 0).toFixed(2);
+  const tva_due = +(tva_collectee - tva_deductible).toFixed(2);
+  const caAnnee = Number((await pool.query(`SELECT COALESCE(SUM(montant_ht),0) s FROM facture WHERE company_id=$1 AND type<>'avoir' AND EXTRACT(YEAR FROM date_emission)=$2`, [company, annee])).rows[0].s);
+  res.json({
+    annee, mois, regime: caAnnee >= 1000000 ? "mensuel" : "trimestriel", ca_annuel: caAnnee, ca_ht,
+    tva_collectee, tva_deductible, tva_due,
+    ventes: ventes.map((v) => ({ date: v.date_emission, numero: v.numero, tiers: v.client, type: v.type, ht: Number(v.montant_ht), tva: Number(v.tva), ttc: Number(v.montant_ttc) })),
+    achats: achats.map((a) => ({ date: a.date_commande, numero: a.numero, tiers: a.fournisseur, ht: Number(a.montant), tva: +(Number(a.montant) * 0.2).toFixed(2), ttc: +(Number(a.montant) * 1.2).toFixed(2) })),
+  });
+}));
+
+// ══════════════ JOURNAL D'ACTIVITÉ ══════════════
+app.get("/api/activite", requireAuth, wrap(async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 300);
+  const rows = req.user.company_id
+    ? (await pool.query("SELECT * FROM activite WHERE company_id=$1 ORDER BY created_at DESC LIMIT $2", [req.user.company_id, limit])).rows
+    : (await pool.query("SELECT * FROM activite ORDER BY created_at DESC LIMIT $1", [limit])).rows;
+  res.json(rows);
+}));
+
+// ══════════════ ONBOARDING (nouveau client) ══════════════
+app.post("/api/onboarding", requireAuth, wrap(async (req, res) => {
+  if (req.user.role !== "DIRECTEUR" || req.user.company_id) return res.status(403).json({ error: "Réservé au super-administrateur" });
+  const { company = {}, user = {} } = req.body || {};
+  if (!company.raison_sociale) return res.status(400).json({ error: "Raison sociale requise" });
+  if (!user.email || !user.password) return res.status(400).json({ error: "Email et mot de passe de l'administrateur requis" });
+  const conn = await pool.connect();
+  try {
+    await conn.query("BEGIN");
+    const co = (await conn.query(
+      `INSERT INTO company (raison_sociale,ice,adresse,ville,telephone,email,rc,if_fiscal,patente,cnss,rib)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [company.raison_sociale, company.ice || null, company.adresse || null, company.ville || null, company.telephone || null, company.email || null, company.rc || null, company.if_fiscal || null, company.patente || null, company.cnss || null, company.rib || null])).rows[0];
+    const hash = await bcrypt.hash(user.password, 10);
+    const u = (await conn.query(
+      `INSERT INTO app_user (email,password_hash,full_name,role,company_id) VALUES ($1,$2,$3,'DIRECTEUR',$4) RETURNING id,email,full_name,role,company_id`,
+      [String(user.email).toLowerCase(), hash, user.full_name || null, co.id])).rows[0];
+    await conn.query("COMMIT");
+    res.status(201).json({ company: co, user: u });
+  } catch (e) { await conn.query("ROLLBACK"); if (e.code === "23505") return res.status(409).json({ error: "Email déjà utilisé" }); throw e; } finally { conn.release(); }
+}));
+
+// ══════════════ SAUVEGARDE / EXPORT COMPLET ══════════════
+app.get("/api/export/backup", requireAuth, wrap(async (req, res) => {
+  if (req.user.role !== "DIRECTEUR") return res.status(403).json({ error: "Réservé au Directeur" });
+  const company = await cid(req);
+  const T = async (sql) => (await pool.query(sql, [company])).rows;
+  const data = {
+    genere_le: new Date().toISOString(), company_id: company,
+    societe: await T("SELECT * FROM company WHERE id=$1"),
+    salaries: await T("SELECT * FROM employee WHERE company_id=$1"),
+    chantiers: await T("SELECT * FROM chantier WHERE company_id=$1"),
+    devis: await T("SELECT * FROM devis WHERE company_id=$1"),
+    factures: await T("SELECT * FROM facture WHERE company_id=$1"),
+    paiements: await T("SELECT * FROM paiement WHERE company_id=$1"),
+    articles: await T("SELECT * FROM article WHERE company_id=$1"),
+    commandes: await T("SELECT * FROM bon_commande WHERE company_id=$1"),
+    fournisseurs: await T("SELECT * FROM fournisseur WHERE company_id=$1"),
+    sous_traitants: await T("SELECT * FROM sous_traitant WHERE company_id=$1"),
+    pointages: await T("SELECT * FROM pointage WHERE company_id=$1"),
+    taches: await T("SELECT * FROM tache WHERE company_id=$1"),
+    materiel: await T("SELECT * FROM materiel WHERE company_id=$1"),
+    rapports: await T("SELECT id,chantier_id,date_rapport,meteo,effectif,avancement,observations FROM rapport_chantier WHERE company_id=$1"),
+  };
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Content-Disposition", `attachment; filename="sauvegarde-btppro-${new Date().toISOString().slice(0, 10)}.json"`);
+  res.end(JSON.stringify(data, null, 2));
+}));
+
+// ══════════════ INTÉGRATIONS — préparation (non certifiée) ══════════════
+// Déclaration CNSS (préparation Damancom) — fichier par période
+app.get("/api/integrations/damancom", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const annee = Number(req.query.annee) || new Date().getFullYear();
+  const mois = Number(req.query.mois) || (new Date().getMonth() + 1);
+  const co = await getCompany(company);
+  const run = (await pool.query("SELECT * FROM payroll_run WHERE company_id=$1 AND periode_annee=$2 AND periode_mois=$3", [company, annee, mois])).rows[0];
+  const slips = run ? (await pool.query("SELECT p.*, e.matricule, e.nom, e.cin FROM payslip p JOIN employee e ON e.id=p.employee_id WHERE p.run_id=$1 ORDER BY e.matricule", [run.id])).rows : [];
+  const esc = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+  const head = ["NumAffiliation", "MatriculeCNSS", "CIN", "NomPrenom", "JoursDeclares", "SalaireReel", "SalairePlafonne"];
+  const lines = [head.map(esc).join(";")];
+  for (const s of slips) { const brut = Number(s.brut); lines.push([co.cnss || "", "", s.cin || "", s.nom, "26", brut.toFixed(2), Math.min(brut, 6000).toFixed(2)].map(esc).join(";")); }
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="preparation-cnss-${annee}-${String(mois).padStart(2, "0")}.csv"`);
+  res.end("\ufeff" + lines.join("\r\n"));
+}));
+// Données de facture structurées (préparation e-facturation DGI) — par période
+app.get("/api/integrations/efacture", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const annee = Number(req.query.annee) || new Date().getFullYear();
+  const mois = Number(req.query.mois) || (new Date().getMonth() + 1);
+  const co = await getCompany(company);
+  const facts = (await pool.query(
+    `SELECT * FROM facture WHERE company_id=$1 AND EXTRACT(YEAR FROM date_emission)=$2 AND EXTRACT(MONTH FROM date_emission)=$3 ORDER BY date_emission`,
+    [company, annee, mois])).rows;
+  const out = {
+    avertissement: "Préparation e-facturation — données structurées non transmises. La télétransmission à la DGI nécessite un agrément officiel.",
+    emetteur: { raison_sociale: co.raison_sociale, ice: co.ice, identifiant_fiscal: co.if_fiscal, rc: co.rc, patente: co.patente, adresse: co.adresse, ville: co.ville },
+    periode: `${annee}-${String(mois).padStart(2, "0")}`, nombre: facts.length,
+    factures: facts.map((f) => ({
+      numero: f.numero, date: f.date_emission, type: f.type,
+      client: { nom: f.client, ice: f.client_ice || null },
+      montant_ht: Number(f.montant_ht), tva: { taux: 20, montant: Number(f.tva) }, montant_ttc: Number(f.montant_ttc),
+    })),
+  };
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Content-Disposition", `attachment; filename="preparation-efacture-${annee}-${String(mois).padStart(2, "0")}.json"`);
+  res.end(JSON.stringify(out, null, 2));
 }));
 
 // ══════════════ EXPORT EXCEL (générique) ══════════════

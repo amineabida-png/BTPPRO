@@ -57,7 +57,7 @@ el("login-form").addEventListener("submit", async (e) => {
 });
 el("logout").addEventListener("click", logout);
 function logout() { token = null; me = null; activeCompany = null; localStorage.clear(); el("app").classList.add("hide"); el("login").classList.remove("hide"); }
-function enterApp() { el("login").classList.add("hide"); el("app").classList.remove("hide"); el("who").textContent = me ? (me.name || me.email) : ""; loadCompanies().then(loadPerms); }
+function enterApp() { el("login").classList.add("hide"); el("app").classList.remove("hide"); el("who").textContent = me ? (me.name || me.email) : ""; loadCompanies().then(loadPerms).then(() => { if (me && me.company_id) document.querySelector('.nav[data-view="onboarding"]')?.classList.add("hide"); if (typeof refreshAlertBadge === "function") refreshAlertBadge(); }); }
 
 /* ===================== Multi-société ===================== */
 async function loadCompanies() {
@@ -118,6 +118,9 @@ const VIEW_DOMAIN = {
   chantiers: "chantiers", incidents: "securite", documents: "ged", ouvrages: "devis", devis: "devis", factures: "facturation",
   articles: "stock", "demandes-achat": "achats", "bons-commande": "achats", fournisseurs: "tiers", "sous-traitants": "tiers",
   integrations: null, users: "admin", societe: "admin",
+  planning: "chantiers", pointage: "chantiers", tresorerie: "facturation",
+  materiel: "chantiers", rapports: "chantiers", alertes: null,
+  compta: "rentabilite", journal: "admin", onboarding: "admin",
 };
 let myPerms = ["*"];
 function allowed(domain) { return domain == null || myPerms.includes("*") || myPerms.includes(domain); }
@@ -142,6 +145,9 @@ const ROUTES = {
   "bons-commande": renderCommandes, chantiers: renderChantiers, incidents: renderSecurite,
   documents: renderGED, fournisseurs: renderFournisseurs, "sous-traitants": renderSousTraitants,
   integrations: renderIntegrations, societe: renderSociete,
+  planning: renderPlanning, pointage: renderPointage, tresorerie: renderTresorerie,
+  materiel: renderMateriel, rapports: renderRapports, alertes: renderAlertes,
+  compta: renderCompta, journal: renderActivite, onboarding: renderOnboarding,
 };
 async function show(v) {
   if (!allowed(VIEW_DOMAIN[v])) { V().innerHTML = `<div class="warn">⛔ Accès non autorisé pour votre rôle.</div>`; return; }
@@ -254,6 +260,17 @@ function modalForm(title, fields, initial = {}) {
 }
 
 /* ===================== Édition générique ===================== */
+function rhDocs(id, mat) {
+  const b = (path, lbl, file) => `<button class="btn ghost" style="justify-content:flex-start" onclick="downloadDoc('/api/employees/${id}/${path}/pdf','${file}-${mat || id}.pdf')">📄 ${lbl}</button>`;
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal"><h3>Documents RH</h3>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${b("attestation-travail", "Attestation de travail", "attestation-travail")}
+      ${b("attestation-salaire", "Attestation de salaire", "attestation-salaire")}
+      ${b("solde-tout-compte", "Reçu pour solde de tout compte", "solde-tout-compte")}
+    </div>
+    <div class="mactions"><button class="btn ghost" onclick="el('modal-root').innerHTML=''">Fermer</button></div>
+    </div></div>`;
+}
 async function editEntity(ep, fields, obj, after) {
   const init = {}; fields.forEach((f) => { if (obj[f.key] != null) init[f.key] = obj[f.key]; });
   const d = await modalForm("Modifier la fiche", fields, init);
@@ -363,7 +380,7 @@ async function renderEmps() {
     <button class="btn sm" onclick="addEmp()">+ Ajouter</button></div>
     <div class="card"><table><thead><tr><th>Matricule</th><th>Salarié</th><th>Poste</th><th>Contrat</th><th class="r">Ancienneté</th><th class="r">Salaire</th><th class="r">Net</th><th></th></tr></thead><tbody>
     ${emps.map((e) => { const a = Math.floor(e.mois_anciennete / 12); return `<tr><td class="mono">${e.matricule}</td><td class="row" onclick="fiche(${e.id})">${e.nom}</td><td><span class="pill">${e.poste || ""}</span></td><td>${e.contrat_type ? `<span class="pill">${e.contrat_type}</span>` : ""}</td><td class="r">${a} an${a > 1 ? "s" : ""}</td><td class="r mono">${fmt(e.salaire_effectif || e.salaire_base)}</td><td class="r mono">${fmt(e.paie.netAPayer)}</td>
-      <td class="r"><button class="btn sm" onclick="fiche(${e.id})">Fiche</button> <button class="btn sm ghost" onclick="editEmp(${e.id})">✏️</button> <button class="btn sm ghost" onclick="goPaie(${e.id})">Paie</button> <button class="btn sm danger" onclick="delEmp(${e.id})">×</button></td></tr>`; }).join("")}
+      <td class="r"><button class="btn sm" onclick="fiche(${e.id})">Fiche</button> <button class="btn sm ghost" onclick="editEmp(${e.id})">✏️</button> <button class="btn sm ghost" onclick="rhDocs(${e.id},'${(e.matricule || "").replace(/'/g, "")}')">📄 Docs</button> <button class="btn sm ghost" onclick="goPaie(${e.id})">Paie</button> <button class="btn sm danger" onclick="delEmp(${e.id})">×</button></td></tr>`; }).join("")}
     </tbody></table></div>`;
 }
 async function addEmp() {
@@ -470,8 +487,20 @@ async function renderRuns() {
   const runs = await api("/api/payroll/runs");
   V().innerHTML = `<h1>Historique des paies</h1><div class="sub">Lots générés et archivés. Ouvre un lot pour télécharger les bulletins PDF.</div>
     <div class="card"><table><thead><tr><th>Période</th><th>Statut</th><th class="r">Brut</th><th class="r">Net</th><th class="r">Coût employeur</th><th></th></tr></thead><tbody>
-    ${runs.length ? runs.map((r) => `<tr><td class="row" onclick="runDetail(${r.id},'${MOIS[r.periode_mois - 1]} ${r.periode_annee}')">${MOIS[r.periode_mois - 1]} ${r.periode_annee}</td><td><span class="pill">${r.statut}</span></td><td class="r mono">${fmt(r.total_brut)}</td><td class="r mono">${fmt(r.total_net)}</td><td class="r mono">${fmt(r.total_cout)}</td><td class="r"><button class="btn sm" onclick="runDetail(${r.id},'${MOIS[r.periode_mois - 1]} ${r.periode_annee}')">Bulletins</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucune paie générée.</td></tr>`}
+    ${runs.length ? runs.map((r) => `<tr><td class="row" onclick="runDetail(${r.id},'${MOIS[r.periode_mois - 1]} ${r.periode_annee}')">${MOIS[r.periode_mois - 1]} ${r.periode_annee}</td><td><span class="pill">${r.statut}</span></td><td class="r mono">${fmt(r.total_brut)}</td><td class="r mono">${fmt(r.total_net)}</td><td class="r mono">${fmt(r.total_cout)}</td><td class="r"><button class="btn sm" onclick="runDetail(${r.id},'${MOIS[r.periode_mois - 1]} ${r.periode_annee}')">Bulletins</button> <button class="btn sm ghost" onclick="runDocs(${r.id})">📄 États</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucune paie générée.</td></tr>`}
     </tbody></table></div>`;
+}
+function runDocs(id) {
+  const b = (path, lbl, file) => `<button class="btn ghost" style="justify-content:flex-start" onclick="downloadDoc('/api/payroll/runs/${id}/${path}/pdf','${file}-${id}.pdf')">📄 ${lbl}</button>`;
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal"><h3>États de paie collectifs</h3>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${b("livre", "Livre de paie (journal du mois)", "livre-paie")}
+      ${b("virement", "Ordre de virement des salaires", "ordre-virement")}
+      ${b("bds", "Bordereau de déclaration CNSS", "bordereau-cnss")}
+    </div>
+    <div class="muted" style="font-size:12px;margin-top:10px">Le bordereau CNSS est un document préparatoire à la télédéclaration Damancom.</div>
+    <div class="mactions"><button class="btn ghost" onclick="el('modal-root').innerHTML=''">Fermer</button></div>
+    </div></div>`;
 }
 async function runDetail(runId, label) {
   const ps = await api(`/api/payroll/runs/${runId}/payslips`);
@@ -588,13 +617,25 @@ async function delOuvrage(id) { if (confirm("Supprimer cet ouvrage ?")) { await 
 /* ===================== Devis (déboursé → marge → prix de vente) ===================== */
 let devisLignes = [];
 let ouvragesCache = [];
+let devisFiltre = "";
 async function renderDevis() {
-  const list = await api("/api/devis");
+  const all = await api("/api/devis");
+  const list = devisFiltre ? all.filter((d) => (d.statut || "brouillon") === devisFiltre) : all;
+  const stOpt = (cur) => ["brouillon", "envoye", "accepte", "refuse", "facture"].map((s) => `<option value="${s}" ${cur === s ? "selected" : ""}>${s}</option>`).join("");
   V().innerHTML = `<div class="bar"><div><h1>Devis</h1><div class="sub">Déboursé sec · coefficient de marge · prix de vente · TVA 20 %.</div></div>
-    <button class="btn sm" onclick="newDevis()">+ Nouveau devis</button></div>
-    <div class="card"><table><thead><tr><th>N°</th><th>Client</th><th>Objet</th><th class="r">Déboursé</th><th class="r">Marge</th><th class="r">TTC</th><th></th></tr></thead><tbody>
-    ${list.length ? list.map((d) => `<tr><td class="mono">${d.numero || d.id}</td><td>${d.client || ""}</td><td>${d.objet || ""}</td><td class="r mono">${fmt(d.total_debourse)}</td><td class="r mono">${fmt(d.total_marge)}</td><td class="r mono">${fmt(d.total_ttc)}</td><td class="r"><button class="btn sm ghost" onclick="downloadDoc('/api/devis/${d.id}/pdf','devis-${d.numero || d.id}.pdf')">📄 PDF</button> <button class="btn sm" onclick="situationFrom(${d.id})">Situation</button> <button class="btn sm danger" onclick="delDevis(${d.id})">×</button></td></tr>`).join("") : `<tr><td colspan="7" class="muted">Aucun devis.</td></tr>`}
+    <div style="display:flex;gap:8px;align-items:center"><select onchange="devisFiltre=this.value;renderDevis()"><option value="">Tous les statuts</option>${["brouillon", "envoye", "accepte", "refuse", "facture"].map((s) => `<option value="${s}" ${devisFiltre === s ? "selected" : ""}>${s}</option>`).join("")}</select>
+    <button class="btn sm" onclick="newDevis()">+ Nouveau devis</button></div></div>
+    <div class="card"><table><thead><tr><th>N°</th><th>Client</th><th>Objet</th><th class="r">TTC</th><th>Statut</th><th></th></tr></thead><tbody>
+    ${list.length ? list.map((d) => `<tr><td class="mono">${d.numero || d.id}</td><td>${d.client || ""}</td><td>${d.objet || ""}</td><td class="r mono">${fmt(d.total_ttc)}</td>
+      <td><select class="stsel" onchange="setDevisStatut(${d.id},this.value)">${stOpt(d.statut || "brouillon")}</select></td>
+      <td class="r"><button class="btn sm ghost" onclick="downloadDoc('/api/devis/${d.id}/pdf','devis-${d.numero || d.id}.pdf')">📄</button> ${d.statut !== "facture" ? `<button class="btn sm" onclick="facturerDevis(${d.id})">Facturer</button>` : ""} <button class="btn sm ghost" onclick="situationFrom(${d.id})">Situation</button> <button class="btn sm ghost" onclick="acompteFrom(${d.id})">Acompte</button> <button class="btn sm danger" onclick="delDevis(${d.id})">×</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucun devis.</td></tr>`}
     </tbody></table></div>`;
+}
+async function setDevisStatut(id, statut) { try { await api("/api/devis/" + id, { method: "PUT", body: JSON.stringify({ statut }) }); } catch (e) { alert(e.message); } }
+async function facturerDevis(id) {
+  if (!confirm("Convertir ce devis en facture ?")) return;
+  try { const f = await api("/api/devis/" + id + "/facturer", { method: "POST" }); await downloadDoc("/api/factures/" + f.id + "/pdf", "facture-" + (f.numero || f.id) + ".pdf"); alert("Facture " + (f.numero || "") + " créée."); renderDevis(); }
+  catch (e) { alert(e.message); }
 }
 async function newDevis() {
   ouvragesCache = await api("/api/ouvrages");
@@ -613,6 +654,7 @@ function drawDevisModal() {
   el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>Nouveau devis</h3>
     <div class="mform"><div class="field"><label>N° (vide = automatique)</label><input id="d-num" placeholder="Automatique"></div>
       <div class="field"><label>Client</label><input id="d-cli"></div>
+      <div class="field"><label>ICE client (B2B)</label><input id="d-ice" placeholder="15 chiffres"></div>
       <div class="field" style="grid-column:1/-1"><label>Objet</label><input id="d-obj"></div></div>
     <div class="colhead" style="margin-top:8px">Lignes (déboursé → ×marge → prix de vente)</div>
     <table class="lines"><thead><tr><th>Ouvrage</th><th>Désignation</th><th class="r">Qté</th><th class="r">Déboursé U.</th><th class="r">×Marge</th><th class="r">P.V.</th><th class="r">Total HT</th><th></th></tr></thead><tbody>
@@ -640,10 +682,20 @@ function pickOuvrage(i, id) {
 function addLigne() { devisLignes.push({ ouvrage_id: "", designation: "", quantite: 1, debourse_unitaire: 0, coef_marge: 1.2 }); drawDevisModal(); }
 function rmLigne(i) { devisLignes.splice(i, 1); drawDevisModal(); }
 async function saveDevis() {
-  const body = { numero: el("d-num").value, client: el("d-cli").value, objet: el("d-obj").value, lignes: devisLignes };
+  const body = { numero: el("d-num").value, client: el("d-cli").value, client_ice: el("d-ice").value, objet: el("d-obj").value, lignes: devisLignes };
   await api("/api/devis/deep", { method: "POST", body: JSON.stringify(body) }); el("modal-root").innerHTML = ""; renderDevis();
 }
 async function delDevis(id) { if (confirm("Supprimer ce devis ?")) { await api("/api/devis/" + id, { method: "DELETE" }); renderDevis(); } }
+async function acompteFrom(id) {
+  const pct = prompt("Pourcentage d'acompte sur le devis (%) :", "30"); if (pct === null) return;
+  try { const f = await api("/api/factures/acompte", { method: "POST", body: JSON.stringify({ devis_id: id, pct: Number(pct) || 30 }) }); await downloadDoc("/api/factures/" + f.id + "/pdf", "acompte-" + (f.numero || f.id) + ".pdf"); alert("Facture d'acompte " + (f.numero || "") + " créée."); }
+  catch (e) { alert(e.message); }
+}
+async function avoirFrom(id) {
+  const motif = prompt("Motif de l'avoir :", "Annulation / correction"); if (motif === null) return;
+  try { const f = await api("/api/factures/avoir", { method: "POST", body: JSON.stringify({ facture_id: id, motif }) }); await downloadDoc("/api/factures/" + f.id + "/pdf", "avoir-" + (f.numero || f.id) + ".pdf"); renderFactures(); }
+  catch (e) { alert(e.message); }
+}
 
 /* ===================== Facturation (situations + retenue de garantie) ===================== */
 async function renderFactures() {
@@ -651,7 +703,7 @@ async function renderFactures() {
   V().innerHTML = `<div class="bar"><div><h1>Factures &amp; situations</h1><div class="sub">Situations de travaux (avancement), retenue de garantie, net à payer.</div></div>
     <button class="btn sm" onclick="situationFrom()">+ Situation</button></div>
     <div class="card"><table><thead><tr><th>N°</th><th>Client</th><th>Type</th><th class="r">Avanc.</th><th class="r">HT</th><th class="r">TTC</th><th class="r">RG</th><th class="r">Net à payer</th><th>Statut</th><th></th></tr></thead><tbody>
-    ${list.length ? list.map((f) => `<tr><td class="mono">${f.numero || f.id}</td><td>${f.client || ""}</td><td><span class="pill">${f.type}</span></td><td class="r">${f.avancement ? f.avancement + " %" : ""}</td><td class="r mono">${fmt(f.montant_ht)}</td><td class="r mono">${fmt(f.montant_ttc)}</td><td class="r mono">${fmt(f.retenue_garantie)}</td><td class="r mono">${fmt(f.net_a_payer || f.montant_ttc)}</td><td><span class="pill">${f.statut}</span></td><td class="r"><button class="btn sm ghost" onclick="downloadDoc('/api/factures/${f.id}/pdf','${f.type === "situation" ? "situation" : "facture"}-${f.numero || f.id}.pdf')">📄 PDF</button> <button class="btn sm danger" onclick="delFacture(${f.id})">×</button></td></tr>`).join("") : `<tr><td colspan="10" class="muted">Aucune facture.</td></tr>`}
+    ${list.length ? list.map((f) => `<tr><td class="mono">${f.numero || f.id}</td><td>${f.client || ""}</td><td><span class="pill">${f.type}</span></td><td class="r">${f.avancement ? f.avancement + " %" : ""}</td><td class="r mono">${fmt(f.montant_ht)}</td><td class="r mono">${fmt(f.montant_ttc)}</td><td class="r mono">${fmt(f.retenue_garantie)}</td><td class="r mono">${fmt(f.net_a_payer || f.montant_ttc)}</td><td><span class="pill">${f.statut}</span></td><td class="r"><button class="btn sm ghost" onclick="downloadDoc('/api/factures/${f.id}/pdf','${f.type}-${f.numero || f.id}.pdf')">📄 PDF</button> ${f.type !== "avoir" ? `<button class="btn sm ghost" onclick="avoirFrom(${f.id})">Avoir</button>` : ""} <button class="btn sm danger" onclick="delFacture(${f.id})">×</button></td></tr>`).join("") : `<tr><td colspan="10" class="muted">Aucune facture.</td></tr>`}
     </tbody></table></div>`;
 }
 async function situationFrom(devisId) {
@@ -699,7 +751,7 @@ async function renderCommandes() {
     <button class="btn sm" onclick="newCommande()">+ Commande</button></div>
     <div class="card"><table><thead><tr><th>N°</th><th>Fournisseur</th><th>Chantier</th><th class="r">Montant</th><th>Statut</th><th></th></tr></thead><tbody>
     ${list.length ? list.map((c) => `<tr><td class="mono">${c.numero}</td><td>${c.fournisseur || ""}</td><td>${c.chantier_code || ""}</td><td class="r mono">${fmt(c.montant)}</td><td><span class="pill">${c.statut}</span></td>
-      <td class="r">${c.statut !== "recue" ? `<button class="btn sm" onclick="recevoir(${c.id})">Réceptionner</button> ` : ""}<button class="btn sm danger" onclick="delCommande(${c.id})">×</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucune commande.</td></tr>`}
+      <td class="r"><button class="btn sm ghost" onclick="downloadDoc('/api/commandes/${c.id}/pdf','bon-commande-${c.numero || c.id}.pdf')">📄 BC</button> <button class="btn sm ghost" onclick="downloadDoc('/api/commandes/${c.id}/reception/pdf','bon-reception-${c.numero || c.id}.pdf')">Réception</button> ${c.statut !== "recue" ? `<button class="btn sm" onclick="recevoir(${c.id})">Réceptionner</button> ` : ""}<button class="btn sm danger" onclick="delCommande(${c.id})">×</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucune commande.</td></tr>`}
     </tbody></table></div>`;
 }
 async function newCommande() {
@@ -749,7 +801,7 @@ async function renderChantiers() {
     <button class="btn sm" onclick="addChantier()">+ Chantier</button></div>
     <div class="card"><table><thead><tr><th>Code</th><th>Nom</th><th>Client</th><th>Ville</th><th>Statut</th><th class="r">Budget prévu</th><th></th></tr></thead><tbody>
     ${list.map((c) => `<tr><td class="mono">${c.code}</td><td>${c.nom}</td><td>${c.client || ""}</td><td>${c.ville || ""}</td><td><span class="pill">${c.statut}</span></td><td class="r mono">${fmt(c.budget_prevu)}</td>
-      <td class="r"><button class="btn sm" onclick="budgetChantier(${c.id})">Budget</button> <button class="btn sm ghost" onclick="editChantier(${c.id})">✏️</button> <button class="btn sm danger" onclick="delChantier(${c.id})">×</button></td></tr>`).join("")}
+      <td class="r"><button class="btn sm" onclick="budgetChantier(${c.id})">Budget</button> <button class="btn sm ghost" onclick="downloadDoc('/api/chantiers/${c.id}/pv/pdf','pv-${c.code || c.id}.pdf')">PV</button> <button class="btn sm ghost" onclick="downloadDoc('/api/chantiers/${c.id}/os/pdf','os-${c.code || c.id}.pdf')">OS</button> <button class="btn sm ghost" onclick="editChantier(${c.id})">✏️</button> <button class="btn sm danger" onclick="delChantier(${c.id})">×</button></td></tr>`).join("")}
     </tbody></table></div>`;
 }
 async function addChantier() {
@@ -1017,7 +1069,7 @@ async function renderSociete() {
   _logoData = c.logo || null;
   const f = (k, lbl, val) => `<div class="field"><label>${lbl}</label><input data-k="${k}" value="${(val ?? "").toString().replace(/"/g, "&quot;")}"></div>`;
   V().innerHTML = `<div class="bar"><div><h1>Ma société</h1><div class="sub">Ces informations apparaissent en en-tête de vos devis et factures.</div></div>
-    <button class="btn" onclick="saveSociete()">Enregistrer</button></div>
+    <div style="display:flex;gap:8px"><button class="btn ghost" onclick="downloadDoc('/api/export/backup','sauvegarde-btppro.json')">💾 Sauvegarde</button><button class="btn" onclick="saveSociete()">Enregistrer</button></div></div>
     <div class="card" style="margin-bottom:14px"><div class="colhead">Logo</div>
       <div style="display:flex;align-items:center;gap:18px">
         <div style="width:130px;height:64px;border:1px dashed #cbd5e1;border-radius:10px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#fbfcfd">
@@ -1088,22 +1140,303 @@ async function saveSociete() {
   catch (e) { alert(e.message); }
 }
 
-/* ===================== Intégrations (adaptateurs cadrés) ===================== */
-function renderIntegrations() {
-  const items = [
-    ["DAMANCOM (CNSS)", "Télédéclaration des salaires — export XML", "À configurer"],
-    ["SIMPL-IR (DGI)", "Déclaration de l'IR sur salaires", "À configurer"],
-    ["Google Maps", "Géolocalisation des chantiers", "À configurer"],
-    ["Twilio", "SMS / notifications", "À configurer"],
-    ["WhatsApp Business", "Messages aux équipes", "À configurer"],
-    ["Paiement bancaire", "Virements de paie", "À configurer"],
-  ];
-  V().innerHTML = `<h1>Intégrations</h1><div class="sub">Adaptateurs prévus par l'architecture.</div>
-    <div class="warn" style="margin-bottom:14px">⚠️ Ces connecteurs sont <b>cadrés mais non connectés</b> : ils nécessitent les spécifications et identifiants officiels (CNSS, DGI, banque) pour être activés. Honnêteté : ils ne fonctionnent pas tant qu'ils ne sont pas configurés avec de vrais accès.</div>
-    <div class="grid" style="grid-template-columns:repeat(2,1fr)">
-    ${items.map(([n, d, s]) => `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><b>${n}</b><span class="pill">${s}</span></div><div class="muted" style="margin-top:6px">${d}</div></div>`).join("")}
-    </div>`;
+/* ===================== Pointage des heures ===================== */
+let ptPeriod = null;
+async function renderPointage() {
+  if (!ptPeriod) ptPeriod = { annee: period.annee, mois: period.mois };
+  await Promise.all([getCache("employees"), getCache("chantiers")]);
+  const emps = caches.employees || [], chs = caches.chantiers || [];
+  const all = await api("/api/pointages");
+  const pts = all.filter((p) => { const d = new Date(p.date_jour); return d.getFullYear() === ptPeriod.annee && (d.getMonth() + 1) === ptPeriod.mois; });
+  const recap = await api(`/api/pointages-recap?annee=${ptPeriod.annee}&mois=${ptPeriod.mois}`);
+  const eName = (id) => { const e = emps.find((x) => x.id == id); return e ? e.nom : "—"; };
+  const cName = (id) => { const c = chs.find((x) => x.id == id); return c ? c.code : "—"; };
+  V().innerHTML = `
+  <div class="bar"><div><h1>Pointage des heures</h1><div class="sub">${MOIS[ptPeriod.mois - 1]} ${ptPeriod.annee} · alimente le coût réel des chantiers</div></div>
+    <div style="display:flex;gap:6px"><button class="btn sm ghost" onclick="shiftPt(-1)">← Mois</button><button class="btn sm ghost" onclick="shiftPt(1)">Mois →</button></div></div>
+  <div class="card" style="margin-bottom:14px"><div class="colhead">Saisir un pointage</div>
+    <div class="form" style="grid-template-columns:repeat(5,1fr)">
+      <div class="field"><label>Salarié</label><select id="pt-emp">${emps.map((e) => `<option value="${e.id}">${e.nom}</option>`).join("")}</select></div>
+      <div class="field"><label>Chantier</label><select id="pt-ch">${chs.map((c) => `<option value="${c.id}">${c.code} — ${c.nom}</option>`).join("")}</select></div>
+      <div class="field"><label>Date</label><input type="date" id="pt-date" value="${new Date().toISOString().slice(0, 10)}"></div>
+      <div class="field"><label>Heures</label><input type="number" id="pt-h" value="8"></div>
+      <div class="field"><label>H. sup.</label><input type="number" id="pt-hs" value="0"></div>
+    </div>
+    <div style="margin-top:10px"><button class="btn sm" onclick="savePointage()">+ Ajouter</button></div></div>
+  <div class="grid kpis" style="grid-template-columns:repeat(2,1fr);margin-bottom:14px">
+    <div class="card kpi"><div class="lbl">Total heures du mois</div><div class="val mono">${recap.total_heures}</div></div>
+    <div class="card kpi"><div class="lbl">Coût main-d'œuvre estimé</div><div class="val mono">${fmt(recap.total_cout)} <small>MAD</small></div></div></div>
+  <div class="card" style="margin-bottom:14px"><div class="colhead">Coût par chantier</div>
+    <table><thead><tr><th>Chantier</th><th class="r">Heures</th><th class="r">H. sup.</th><th class="r">Coût (MAD)</th></tr></thead><tbody>
+    ${recap.lignes.length ? recap.lignes.map((l) => `<tr><td>${l.code ? l.code + " — " + (l.nom || "") : "(non affecté)"}</td><td class="r mono">${l.heures}</td><td class="r mono">${l.heures_sup}</td><td class="r mono">${fmt(l.cout)}</td></tr>`).join("") : `<tr><td colspan="4" class="muted">Aucun pointage ce mois.</td></tr>`}
+    </tbody></table></div>
+  <div class="card"><div class="colhead">Détail des pointages</div>
+    <table><thead><tr><th>Date</th><th>Salarié</th><th>Chantier</th><th class="r">Heures</th><th class="r">H. sup.</th><th></th></tr></thead><tbody>
+    ${pts.length ? pts.map((p) => `<tr><td>${new Date(p.date_jour).toLocaleDateString("fr-FR")}</td><td>${eName(p.employee_id)}</td><td>${cName(p.chantier_id)}</td><td class="r mono">${p.heures}</td><td class="r mono">${p.heures_sup}</td><td class="r"><button class="btn sm danger" onclick="delPointage(${p.id})">×</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucun pointage.</td></tr>`}
+    </tbody></table></div>`;
 }
+function shiftPt(d) { let m = ptPeriod.mois + d, y = ptPeriod.annee; if (m < 1) { m = 12; y--; } if (m > 12) { m = 1; y++; } ptPeriod = { annee: y, mois: m }; renderPointage(); }
+async function savePointage() {
+  const body = { employee_id: +el("pt-emp").value, chantier_id: +el("pt-ch").value, date_jour: el("pt-date").value, heures: +el("pt-h").value || 0, heures_sup: +el("pt-hs").value || 0 };
+  try { await api("/api/pointages", { method: "POST", body: JSON.stringify(body) }); renderPointage(); } catch (e) { alert(e.message); }
+}
+async function delPointage(id) { if (confirm("Supprimer ce pointage ?")) { await api("/api/pointages/" + id, { method: "DELETE" }); renderPointage(); } }
+
+/* ===================== Planning de chantier (Gantt) ===================== */
+let planChantier = "";
+const tacheFields = () => [{ key: "libelle", label: "Tâche" }, { key: "date_debut", label: "Début", type: "date" }, { key: "date_fin", label: "Fin", type: "date" }, { key: "avancement", label: "Avancement (%)", type: "number" }, { key: "responsable", label: "Responsable" }, { key: "statut", label: "Statut", type: "select", options: opt(["a_faire", "en_cours", "termine", "bloque"]) }];
+async function renderPlanning() {
+  await getCache("chantiers");
+  const chs = caches.chantiers || [];
+  if (!planChantier && chs.length) planChantier = String(chs[0].id);
+  const all = await api("/api/taches");
+  const taches = all.filter((t) => String(t.chantier_id) === String(planChantier));
+  const ds = taches.flatMap((t) => [t.date_debut, t.date_fin]).filter(Boolean).map((d) => new Date(d).getTime());
+  const min = ds.length ? Math.min(...ds) : Date.now(), max = ds.length ? Math.max(...ds) : Date.now() + 2592e6;
+  const span = Math.max(max - min, 864e5);
+  const bar = (t) => { const s = t.date_debut ? new Date(t.date_debut).getTime() : min; const e = t.date_fin ? new Date(t.date_fin).getTime() : s + 864e5; const left = (s - min) / span * 100, width = Math.max((e - s) / span * 100, 3); return `<div class="gbar" style="left:${left}%;width:${width}%"><div class="gfill" style="width:${t.avancement || 0}%"></div><span>${t.avancement || 0}%</span></div>`; };
+  V().innerHTML = `
+  <div class="bar"><div><h1>Planning de chantier</h1><div class="sub">Tâches, jalons et avancement</div></div>
+    <div style="display:flex;gap:8px"><select onchange="planChantier=this.value;renderPlanning()">${chs.map((c) => `<option value="${c.id}" ${String(c.id) === String(planChantier) ? "selected" : ""}>${c.code} — ${c.nom}</option>`).join("")}</select>
+    <button class="btn sm" onclick="addTache()">+ Tâche</button></div></div>
+  <div class="card">
+    ${taches.length ? `<div class="gantt">${taches.map((t) => `
+      <div class="grow"><div class="glabel">${t.libelle}<div class="muted" style="font-size:11px">${t.date_debut ? new Date(t.date_debut).toLocaleDateString("fr-FR") : "?"} → ${t.date_fin ? new Date(t.date_fin).toLocaleDateString("fr-FR") : "?"}${t.responsable ? " · " + t.responsable : ""}</div></div>
+      <div class="gtrack">${bar(t)}</div>
+      <div class="gact"><button class="btn sm ghost" onclick="editTache(${t.id})">✏️</button> <button class="btn sm danger" onclick="delTache(${t.id})">×</button></div></div>`).join("")}</div>`
+    : `<div class="muted">Aucune tâche pour ce chantier. Cliquez « + Tâche » pour commencer le planning.</div>`}
+  </div>`;
+}
+async function addTache() { if (!planChantier) { alert("Créez d'abord un chantier."); return; } const d = await modalForm("Nouvelle tâche", tacheFields()); if (!d) return; d.chantier_id = +planChantier; try { await api("/api/taches", { method: "POST", body: JSON.stringify(d) }); renderPlanning(); } catch (e) { alert(e.message); } }
+async function editTache(id) { const all = await api("/api/taches"); const o = all.find((x) => x.id === id); if (o) editEntity("/api/taches", tacheFields(), o, () => renderPlanning()); }
+async function delTache(id) { if (confirm("Supprimer cette tâche ?")) { await api("/api/taches/" + id, { method: "DELETE" }); renderPlanning(); } }
+
+/* ===================== Trésorerie ===================== */
+async function renderTresorerie() {
+  const d = await api("/api/tresorerie/dashboard");
+  const pays = await api("/api/paiements");
+  V().innerHTML = `
+  <div class="bar"><div><h1>Trésorerie</h1><div class="sub">Encaissements, créances clients et échéancier</div></div>
+    <button class="btn sm" onclick="addPaiement()">+ Paiement</button></div>
+  <div class="grid kpis">
+    <div class="card kpi ok"><div class="lbl">Encaissements</div><div class="val mono">${fmt(d.encaissements)} <small>MAD</small></div></div>
+    <div class="card kpi"><div class="lbl">Décaissements</div><div class="val mono">${fmt(d.decaissements)} <small>MAD</small></div></div>
+    <div class="card kpi ${d.solde >= 0 ? "ok" : "alert"}"><div class="lbl">Solde</div><div class="val mono">${fmt(d.solde)} <small>MAD</small></div></div>
+    <div class="card kpi ${d.creances_clients > 0 ? "warn" : "ok"}"><div class="lbl">Créances clients</div><div class="val mono">${fmt(d.creances_clients)} <small>MAD</small></div></div></div>
+  <div class="card" style="margin-top:16px"><div class="colhead">Échéancier — factures à encaisser</div>
+    <table><thead><tr><th>N°</th><th>Client</th><th class="r">Dû</th><th class="r">Réglé</th><th class="r">Reste</th><th class="r">Ancienneté</th><th></th></tr></thead><tbody>
+    ${d.echeancier.length ? d.echeancier.map((e) => `<tr><td class="mono">${e.numero || e.id}</td><td>${e.client || ""}</td><td class="r mono">${fmt(e.du)}</td><td class="r mono">${fmt(e.regle)}</td><td class="r mono">${fmt(e.reste)}</td><td class="r">${e.jours_anciennete} j ${e.en_retard ? '<span class="pill" style="background:var(--rose-bg);color:var(--rose)">retard</span>' : ""}</td><td class="r"><button class="btn sm" onclick="encaisser(${e.id},${e.reste},'${(e.numero || "").replace(/'/g, "")}')">Encaisser</button></td></tr>`).join("") : `<tr><td colspan="7" class="muted">Aucune créance en attente. 👍</td></tr>`}
+    </tbody></table></div>
+  <div class="card" style="margin-top:16px"><div class="colhead">Mouvements récents</div>
+    <table><thead><tr><th>Date</th><th>Sens</th><th>Tiers / Réf.</th><th>Mode</th><th class="r">Montant</th><th></th></tr></thead><tbody>
+    ${pays.length ? pays.slice(0, 50).map((p) => `<tr><td>${new Date(p.date_paiement).toLocaleDateString("fr-FR")}</td><td><span class="pill">${p.sens === "encaissement" ? "Encaissé" : "Décaissé"}</span></td><td>${p.tiers || (p.facture_id ? "Facture #" + p.facture_id : "")}${p.reference ? " · " + p.reference : ""}</td><td>${p.mode || ""}</td><td class="r mono">${fmt(p.montant)}</td><td class="r"><button class="btn sm danger" onclick="delPaiement(${p.id})">×</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucun mouvement.</td></tr>`}
+    </tbody></table></div>`;
+}
+async function encaisser(factureId, reste, num) {
+  const d = await modalForm("Encaisser la facture " + (num || ""), [{ key: "montant", label: "Montant", type: "number" }, { key: "date_paiement", label: "Date", type: "date" }, { key: "mode", label: "Mode", type: "select", options: opt(["virement", "cheque", "espece", "effet"]) }, { key: "reference", label: "Référence" }], { montant: reste, date_paiement: new Date().toISOString().slice(0, 10), mode: "virement" });
+  if (!d) return; d.sens = "encaissement"; d.facture_id = factureId;
+  try { await api("/api/paiements", { method: "POST", body: JSON.stringify(d) }); renderTresorerie(); } catch (e) { alert(e.message); }
+}
+async function addPaiement() {
+  const d = await modalForm("Nouveau paiement", [{ key: "sens", label: "Sens", type: "select", options: opt(["encaissement", "decaissement"]) }, { key: "tiers", label: "Tiers" }, { key: "montant", label: "Montant", type: "number" }, { key: "date_paiement", label: "Date", type: "date" }, { key: "mode", label: "Mode", type: "select", options: opt(["virement", "cheque", "espece", "effet"]) }, { key: "reference", label: "Référence" }], { date_paiement: new Date().toISOString().slice(0, 10), sens: "encaissement", mode: "virement" });
+  if (!d) return;
+  try { await api("/api/paiements", { method: "POST", body: JSON.stringify(d) }); renderTresorerie(); } catch (e) { alert(e.message); }
+}
+async function delPaiement(id) { if (confirm("Supprimer ce mouvement ?")) { await api("/api/paiements/" + id, { method: "DELETE" }); renderTresorerie(); } }
+
+/* ===================== Parc matériel ===================== */
+const materielFields = () => [{ key: "code", label: "Code" }, { key: "designation", label: "Désignation" }, { key: "type", label: "Type", type: "select", options: opt(["engin", "outillage", "vehicule"]) }, { key: "etat", label: "État", type: "select", options: opt(["disponible", "en_service", "maintenance", "hs"]) }, { key: "valeur_acquisition", label: "Valeur (MAD)", type: "number" }, { key: "date_acquisition", label: "Date d'acquisition", type: "date" }];
+async function renderMateriel() {
+  await getCache("chantiers");
+  const chs = caches.chantiers || [];
+  const list = await api("/api/materiel"); caches.materiel = list;
+  const chName = (id) => { const c = chs.find((x) => x.id == id); return c ? c.code : "—"; };
+  const pill = (e) => `<span class="pill" style="${e === "hs" ? "background:var(--rose-bg);color:var(--rose)" : e === "maintenance" ? "background:var(--amber-bg);color:var(--amber)" : e === "disponible" ? "background:var(--green-bg);color:var(--green)" : ""}">${e}</span>`;
+  const total = list.length, dispo = list.filter((m) => m.etat === "disponible").length, maint = list.filter((m) => ["maintenance", "hs"].includes(m.etat)).length;
+  const valeur = list.reduce((s, m) => s + Number(m.valeur_acquisition || 0), 0);
+  V().innerHTML = `<div class="bar"><div><h1>Parc matériel</h1><div class="sub">Engins, outillage et véhicules · affectation et maintenance</div></div>
+    <button class="btn sm" onclick="addMateriel()">+ Matériel</button></div>
+  <div class="grid kpis" style="margin-bottom:14px">
+    <div class="card kpi flat"><div class="lbl">Matériels</div><div class="val mono">${total}</div></div>
+    <div class="card kpi ok"><div class="lbl">Disponibles</div><div class="val mono">${dispo}</div></div>
+    <div class="card kpi ${maint ? "warn" : "flat"}"><div class="lbl">Maintenance / HS</div><div class="val mono">${maint}</div></div>
+    <div class="card kpi"><div class="lbl">Valeur du parc</div><div class="val mono">${fmt(valeur)} <small>MAD</small></div></div></div>
+  <div class="card"><table><thead><tr><th>Code</th><th>Désignation</th><th>Type</th><th>État</th><th>Chantier</th><th class="r">Valeur</th><th></th></tr></thead><tbody>
+  ${list.length ? list.map((m) => `<tr><td class="mono">${m.code || ""}</td><td>${m.designation}</td><td>${m.type || ""}</td><td>${pill(m.etat)}</td><td>${chName(m.chantier_id)}</td><td class="r mono">${fmt(m.valeur_acquisition)}</td>
+    <td class="r"><button class="btn sm" onclick="affecterMateriel(${m.id})">Affecter</button> <button class="btn sm ghost" onclick="maintenanceMateriel(${m.id})">🔧</button> <button class="btn sm ghost" onclick="editMateriel(${m.id})">✏️</button> <button class="btn sm danger" onclick="delMateriel(${m.id})">×</button></td></tr>`).join("") : `<tr><td colspan="7" class="muted">Aucun matériel.</td></tr>`}
+  </tbody></table></div>`;
+}
+async function addMateriel() { const d = await modalForm("Nouveau matériel", materielFields()); if (!d) return; await api("/api/materiel", { method: "POST", body: JSON.stringify(d) }); renderMateriel(); }
+function editMateriel(id) { const o = (caches.materiel || []).find((x) => x.id === id); if (o) editEntity("/api/materiel", materielFields(), o, () => renderMateriel()); }
+async function delMateriel(id) { if (confirm("Supprimer ce matériel ?")) { await api("/api/materiel/" + id, { method: "DELETE" }); renderMateriel(); } }
+async function affecterMateriel(id) {
+  await getCache("chantiers"); const chs = caches.chantiers || [];
+  const d = await modalForm("Affecter le matériel", [{ key: "chantier_id", label: "Chantier", type: "select", options: [{ value: "", label: "— aucun —" }, ...chs.map((c) => ({ value: c.id, label: c.code + " — " + c.nom }))] }, { key: "etat", label: "État", type: "select", options: opt(["en_service", "disponible", "maintenance", "hs"]) }]);
+  if (!d) return; await api("/api/materiel/" + id + "/affecter", { method: "POST", body: JSON.stringify(d) }); renderMateriel();
+}
+async function maintenanceMateriel(id) {
+  const d = await modalForm("Intervention de maintenance", [{ key: "date_maintenance", label: "Date", type: "date" }, { key: "type", label: "Type" }, { key: "cout", label: "Coût (MAD)", type: "number" }, { key: "note", label: "Note" }], { date_maintenance: new Date().toISOString().slice(0, 10) });
+  if (!d) return; await api("/api/materiel/" + id + "/maintenance", { method: "POST", body: JSON.stringify(d) }); renderMateriel();
+}
+
+/* ===================== Rapports de chantier (photos) ===================== */
+let rapPhotos = [];
+async function renderRapports() {
+  await getCache("chantiers");
+  const list = await api("/api/rapports");
+  V().innerHTML = `<div class="bar"><div><h1>Rapports de chantier</h1><div class="sub">Visites terrain avec photos · export PDF</div></div>
+    <button class="btn sm" onclick="newRapport()">+ Rapport</button></div>
+  <div class="card"><table><thead><tr><th>Date</th><th>Chantier</th><th>Météo</th><th class="r">Effectif</th><th class="r">Photos</th><th></th></tr></thead><tbody>
+  ${list.length ? list.map((r) => `<tr><td>${new Date(r.date_rapport).toLocaleDateString("fr-FR")}</td><td>${r.chantier_code ? r.chantier_code + " — " + (r.chantier_nom || "") : "—"}</td><td>${r.meteo || ""}</td><td class="r">${r.effectif || 0}</td><td class="r">${r.nb_photos || 0} 📷</td>
+    <td class="r"><button class="btn sm ghost" onclick="viewRapport(${r.id})">Voir</button> <button class="btn sm ghost" onclick="downloadDoc('/api/rapports/${r.id}/pdf','rapport-${r.id}.pdf')">📄 PDF</button> <button class="btn sm danger" onclick="delRapport(${r.id})">×</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucun rapport.</td></tr>`}
+  </tbody></table></div>`;
+}
+function newRapport() {
+  const chs = caches.chantiers || []; rapPhotos = [];
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>Nouveau rapport de chantier</h3>
+    <div class="mform">
+      <div class="field"><label>Chantier</label><select id="rp-ch">${chs.map((c) => `<option value="${c.id}">${c.code} — ${c.nom}</option>`).join("")}</select></div>
+      <div class="field"><label>Date</label><input type="date" id="rp-date" value="${new Date().toISOString().slice(0, 10)}"></div>
+      <div class="field"><label>Météo</label><input id="rp-meteo" placeholder="Ensoleillé, pluie…"></div>
+      <div class="field"><label>Effectif présent</label><input type="number" id="rp-eff" value="0"></div>
+      <div class="field" style="grid-column:1/-1"><label>Avancement</label><input id="rp-av"></div>
+      <div class="field" style="grid-column:1/-1"><label>Observations</label><input id="rp-obs"></div>
+    </div>
+    <div class="colhead" style="margin-top:10px">Photos (jusqu'à 12)</div>
+    <input type="file" accept="image/*" multiple onchange="addRapPhotos(this)">
+    <div id="rp-photos" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px"></div>
+    <div class="mactions"><button class="btn ghost" onclick="el('modal-root').innerHTML=''">Annuler</button><button class="btn" onclick="saveRapport()">Enregistrer</button></div>
+    </div></div>`;
+}
+function addRapPhotos(input) {
+  [...input.files].slice(0, 12).forEach((file) => {
+    const rd = new FileReader();
+    rd.onload = () => { const img = new Image(); img.onload = () => { const max = 1000, sc = Math.min(1, max / img.width); const cv = document.createElement("canvas"); cv.width = Math.round(img.width * sc); cv.height = Math.round(img.height * sc); cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height); rapPhotos.push({ data: cv.toDataURL("image/jpeg", 0.7), legende: "" }); drawRapPhotos(); }; img.src = rd.result; };
+    rd.readAsDataURL(file);
+  });
+  input.value = "";
+}
+function drawRapPhotos() { el("rp-photos").innerHTML = rapPhotos.map((p, i) => `<div style="position:relative"><img src="${p.data}" style="width:90px;height:70px;object-fit:cover;border-radius:8px;border:1px solid var(--line)"><button class="btn sm danger" style="position:absolute;top:-6px;right:-6px;padding:1px 6px" onclick="rapPhotos.splice(${i},1);drawRapPhotos()">×</button></div>`).join(""); }
+async function saveRapport() {
+  const body = { chantier_id: +el("rp-ch").value, date_rapport: el("rp-date").value, meteo: el("rp-meteo").value, effectif: +el("rp-eff").value || 0, avancement: el("rp-av").value, observations: el("rp-obs").value, photos: rapPhotos };
+  try { await api("/api/rapports", { method: "POST", body: JSON.stringify(body) }); el("modal-root").innerHTML = ""; renderRapports(); } catch (e) { alert(e.message); }
+}
+async function viewRapport(id) {
+  const r = await api("/api/rapports/" + id);
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>Rapport — ${new Date(r.date_rapport).toLocaleDateString("fr-FR")}</h3>
+    <div class="muted" style="margin-bottom:8px">Météo : ${r.meteo || "—"} · Effectif : ${r.effectif || 0}</div>
+    <div><b>Avancement :</b> ${r.avancement || "—"}</div><div style="margin:6px 0"><b>Observations :</b> ${r.observations || "—"}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">${(r.photos || []).map((p) => `<img src="${p.data}" style="width:150px;height:115px;object-fit:cover;border-radius:8px;border:1px solid var(--line)">`).join("") || '<span class="muted">Aucune photo.</span>'}</div>
+    <div class="mactions"><button class="btn ghost" onclick="el('modal-root').innerHTML=''">Fermer</button><button class="btn" onclick="downloadDoc('/api/rapports/${id}/pdf','rapport-${id}.pdf')">📄 PDF</button></div>
+    </div></div>`;
+}
+async function delRapport(id) { if (confirm("Supprimer ce rapport ?")) { await api("/api/rapports/" + id, { method: "DELETE" }); renderRapports(); } }
+
+/* ===================== Centre d'alertes ===================== */
+async function renderAlertes() {
+  const d = await api("/api/alertes");
+  const ic = { stock: "📦", securite: "⛑️", conges: "🌴", materiel: "🚜", planning: "📅", tresorerie: "💰" };
+  V().innerHTML = `<div class="bar"><div><h1>Centre d'alertes</h1><div class="sub">${d.total ? d.total + " point(s) d'attention" : "Tout est à jour"}</div></div></div>
+  ${d.alertes.length ? `<div class="grid" style="gap:12px">${d.alertes.map((a) => `<button class="card" style="display:flex;align-items:center;gap:14px;text-align:left;cursor:pointer;border-left:4px solid ${a.severite === "alerte" ? "var(--rose)" : "var(--amber)"}" onclick="show('${a.view}')">
+    <span style="font-size:24px">${ic[a.type] || "🔔"}</span>
+    <div><div style="font-weight:700">${a.message}</div><div class="muted" style="font-size:12px">Cliquez pour ouvrir le module</div></div>
+    <span class="pill" style="margin-left:auto;${a.severite === "alerte" ? "background:var(--rose-bg);color:var(--rose)" : "background:var(--amber-bg);color:var(--amber)"}">${a.count}</span></button>`).join("")}</div>`
+    : `<div class="card" style="text-align:center;padding:40px"><div style="font-size:40px">✅</div><div style="font-weight:700;margin-top:8px">Aucune alerte</div><div class="muted">Tout est sous contrôle.</div></div>`}`;
+}
+async function refreshAlertBadge() {
+  try { const d = await api("/api/alertes"); const nav = document.querySelector('.nav[data-view="alertes"]'); if (nav) nav.innerHTML = "🔔 Alertes" + (d.total ? ` <span class="badge">${d.total}</span>` : ""); } catch { /* ignore */ }
+}
+
+/* ===================== Comptabilité / TVA ===================== */
+let comptaPeriod = null;
+async function renderCompta() {
+  if (!comptaPeriod) comptaPeriod = { annee: period.annee, mois: period.mois };
+  const d = await api(`/api/compta?annee=${comptaPeriod.annee}&mois=${comptaPeriod.mois}`);
+  V().innerHTML = `
+  <div class="bar"><div><h1>Comptabilité — TVA</h1><div class="sub">${MOIS[comptaPeriod.mois - 1]} ${comptaPeriod.annee} · régime ${d.regime} (CA annuel ${fmt(d.ca_annuel)} MAD)</div></div>
+    <div style="display:flex;gap:6px"><button class="btn sm ghost" onclick="shiftCompta(-1)">← Mois</button><button class="btn sm ghost" onclick="shiftCompta(1)">Mois →</button></div></div>
+  <div class="grid kpis">
+    <div class="card kpi"><div class="lbl">TVA collectée (ventes)</div><div class="val mono">${fmt(d.tva_collectee)} <small>MAD</small></div></div>
+    <div class="card kpi"><div class="lbl">TVA déductible (achats)</div><div class="val mono">${fmt(d.tva_deductible)} <small>MAD</small></div></div>
+    <div class="card kpi ${d.tva_due >= 0 ? "alert" : "ok"}"><div class="lbl">${d.tva_due >= 0 ? "TVA à payer" : "Crédit de TVA"}</div><div class="val mono">${fmt(Math.abs(d.tva_due))} <small>MAD</small></div></div>
+    <div class="card kpi flat"><div class="lbl">CA HT du mois</div><div class="val mono">${fmt(d.ca_ht)} <small>MAD</small></div></div></div>
+  <div class="card" style="margin-top:6px"><div class="warn">ℹ️ <span>TVA déductible estimée à 20 % des achats. Télédéclaration obligatoire sur le portail SIMPL-TVA avant le 20 du mois suivant (régime <b>${d.regime}</b>).</span></div></div>
+  <div class="card" style="margin-top:14px"><div class="colhead">Journal des ventes</div>
+    <table><thead><tr><th>Date</th><th>Pièce</th><th>Client</th><th>Type</th><th class="r">HT</th><th class="r">TVA</th><th class="r">TTC</th></tr></thead><tbody>
+    ${d.ventes.length ? d.ventes.map((v) => `<tr><td>${new Date(v.date).toLocaleDateString("fr-FR")}</td><td class="mono">${v.numero || ""}</td><td>${v.tiers || ""}</td><td>${v.type}</td><td class="r mono">${fmt(v.ht)}</td><td class="r mono">${fmt(v.tva)}</td><td class="r mono">${fmt(v.ttc)}</td></tr>`).join("") : `<tr><td colspan="7" class="muted">Aucune vente ce mois.</td></tr>`}
+    </tbody></table></div>
+  <div class="card" style="margin-top:14px"><div class="colhead">Journal des achats</div>
+    <table><thead><tr><th>Date</th><th>Pièce</th><th>Fournisseur</th><th class="r">HT</th><th class="r">TVA</th><th class="r">TTC</th></tr></thead><tbody>
+    ${d.achats.length ? d.achats.map((a) => `<tr><td>${new Date(a.date).toLocaleDateString("fr-FR")}</td><td class="mono">${a.numero || ""}</td><td>${a.tiers || ""}</td><td class="r mono">${fmt(a.ht)}</td><td class="r mono">${fmt(a.tva)}</td><td class="r mono">${fmt(a.ttc)}</td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucun achat ce mois.</td></tr>`}
+    </tbody></table></div>`;
+}
+function shiftCompta(dlt) { let m = comptaPeriod.mois + dlt, y = comptaPeriod.annee; if (m < 1) { m = 12; y--; } if (m > 12) { m = 1; y++; } comptaPeriod = { annee: y, mois: m }; renderCompta(); }
+
+/* ===================== Journal d'activité ===================== */
+async function renderActivite() {
+  const rows = await api("/api/activite?limit=200");
+  const act = { POST: "Création", PUT: "Modification", PATCH: "Modification", DELETE: "Suppression" };
+  V().innerHTML = `<div class="bar"><div><h1>Journal d'activité</h1><div class="sub">Traçabilité des opérations (200 dernières)</div></div></div>
+  <div class="card"><table><thead><tr><th>Date & heure</th><th>Utilisateur</th><th>Action</th><th>Cible</th></tr></thead><tbody>
+  ${rows.length ? rows.map((r) => `<tr><td>${new Date(r.created_at).toLocaleString("fr-FR")}</td><td>${r.user_email || ""}</td><td><span class="pill">${act[r.action] || r.action}</span></td><td class="mono" style="font-size:12px">${r.cible || ""}</td></tr>`).join("") : `<tr><td colspan="4" class="muted">Aucune activité enregistrée.</td></tr>`}
+  </tbody></table></div>`;
+}
+
+/* ===================== Onboarding (nouveau client) ===================== */
+function renderOnboarding() {
+  V().innerHTML = `<div class="bar"><div><h1>Nouveau client</h1><div class="sub">Créer une société cliente et son compte administrateur (réservé au super-administrateur)</div></div></div>
+  <div class="card" style="max-width:700px">
+    <div class="colhead">Société cliente</div>
+    <div class="form" style="grid-template-columns:1fr 1fr">
+      <div class="field"><label>Raison sociale *</label><input id="ob-rs"></div>
+      <div class="field"><label>ICE</label><input id="ob-ice"></div>
+      <div class="field"><label>Ville</label><input id="ob-ville"></div>
+      <div class="field"><label>Téléphone</label><input id="ob-tel"></div>
+    </div>
+    <div class="colhead" style="margin-top:16px">Compte administrateur (Directeur)</div>
+    <div class="form" style="grid-template-columns:1fr 1fr">
+      <div class="field"><label>Nom complet</label><input id="ob-name"></div>
+      <div class="field"><label>Email *</label><input id="ob-email"></div>
+      <div class="field" style="grid-column:1/-1"><label>Mot de passe *</label><input id="ob-pwd" type="password"></div>
+    </div>
+    <div class="mactions"><button class="btn" onclick="saveOnboarding()">Créer le client</button></div>
+    <div id="ob-msg" style="margin-top:10px;font-size:13px"></div>
+  </div>`;
+}
+async function saveOnboarding() {
+  const body = { company: { raison_sociale: el("ob-rs").value, ice: el("ob-ice").value, ville: el("ob-ville").value, telephone: el("ob-tel").value }, user: { full_name: el("ob-name").value, email: el("ob-email").value, password: el("ob-pwd").value } };
+  if (!body.company.raison_sociale || !body.user.email || !body.user.password) { el("ob-msg").innerHTML = '<span class="err">Raison sociale, email et mot de passe sont requis.</span>'; return; }
+  try { const r = await api("/api/onboarding", { method: "POST", body: JSON.stringify(body) }); el("ob-msg").innerHTML = `✅ Client « ${r.company.raison_sociale} » créé. L'administrateur se connecte avec <b>${r.user.email}</b> et verra uniquement sa société.`; }
+  catch (e) { el("ob-msg").innerHTML = '<span class="err">Erreur : ' + e.message + "</span>"; }
+}
+
+/* ===================== Intégrations (adaptateurs cadrés) ===================== */
+let intgPeriod = null;
+function renderIntegrations() {
+  if (!intgPeriod) intgPeriod = { annee: period.annee, mois: period.mois };
+  const planned = [
+    ["SIMPL-IR (DGI)", "Déclaration de l'IR sur salaires"],
+    ["Google Maps", "Géolocalisation des chantiers"],
+    ["WhatsApp / SMS", "Notifications aux équipes et clients"],
+    ["Virement bancaire", "Exécution des virements de paie"],
+  ];
+  V().innerHTML = `<div class="bar"><div><h1>Intégrations & conformité</h1><div class="sub">Période ${MOIS[intgPeriod.mois - 1]} ${intgPeriod.annee}</div></div>
+    <div style="display:flex;gap:6px"><button class="btn sm ghost" onclick="shiftIntg(-1)">← Mois</button><button class="btn sm ghost" onclick="shiftIntg(1)">Mois →</button></div></div>
+  <div class="warn" style="margin-bottom:14px">⚠️ <span><b>Préparation, pas transmission.</b> La télédéclaration temps réel (DGI/SIMPL, CNSS/Damancom) exige un agrément officiel et des certificats. Ces exports te préparent le travail ; la transmission reste à faire sur les portails officiels (ou via ton comptable) jusqu'à activation des accès agréés.</span></div>
+  <div class="grid" style="grid-template-columns:repeat(2,1fr)">
+    <div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><b>🟢 CNSS / Damancom</b><span class="pill" style="background:var(--green-bg);color:var(--green)">Préparation prête</span></div>
+      <div class="muted" style="margin:8px 0">Génère le fichier de déclaration des salaires (matricules, jours, salaire réel et plafonné) à partir de la paie du mois — à importer/saisir dans Damancom.</div>
+      <button class="btn sm" onclick="downloadDoc('/api/integrations/damancom?annee=${intgPeriod.annee}&mois=${intgPeriod.mois}','preparation-cnss-${intgPeriod.annee}-${intgPeriod.mois}.csv')">⬇️ Fichier déclaration CNSS</button></div>
+    <div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><b>🟢 DGI / E-facturation</b><span class="pill" style="background:var(--green-bg);color:var(--green)">Préparation prête</span></div>
+      <div class="muted" style="margin:8px 0">Exporte les factures du mois en données structurées (ICE émetteur/client, TVA, totaux) conformes aux mentions de l'article 145 du CGI — base pour la future e-facturation.</div>
+      <button class="btn sm" onclick="downloadDoc('/api/integrations/efacture?annee=${intgPeriod.annee}&mois=${intgPeriod.mois}','preparation-efacture-${intgPeriod.annee}-${intgPeriod.mois}.json')">⬇️ Données e-facture (JSON)</button></div>
+  </div>
+  <div class="colhead" style="margin-top:18px">Connecteurs prévus (à activer avec accès officiels)</div>
+  <div class="grid" style="grid-template-columns:repeat(2,1fr)">
+    ${planned.map(([n, d]) => `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><b>${n}</b><span class="pill">À configurer</span></div><div class="muted" style="margin-top:6px">${d}</div></div>`).join("")}
+  </div>`;
+}
+function shiftIntg(dlt) { let m = intgPeriod.mois + dlt, y = intgPeriod.annee; if (m < 1) { m = 12; y--; } if (m > 12) { m = 1; y++; } intgPeriod = { annee: y, mois: m }; renderIntegrations(); }
 
 /* ===================== Démarrage ===================== */
 // Réapplique recherche + tri après chaque rendu (y compris re-rendus internes)

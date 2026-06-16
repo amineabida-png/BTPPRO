@@ -24,7 +24,7 @@ function roleHasDomain(role, domain) {
 }
 
 function sign(user) {
-  return jwt.sign({ sub: user.id, email: user.email, role: user.role, name: user.full_name }, SECRET, { expiresIn: "8h" });
+  return jwt.sign({ sub: user.id, email: user.email, role: user.role, name: user.full_name, company_id: user.company_id || null }, SECRET, { expiresIn: "8h" });
 }
 function verify(token) { return jwt.verify(token, SECRET); }
 
