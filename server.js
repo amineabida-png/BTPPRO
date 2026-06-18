@@ -215,21 +215,21 @@ app.get("/api/employees", requireAuth, wrap(async (req, res) => {
   res.json(rows.map((e) => ({ ...e, paie: calculatePayroll({ salaireBase: Number(e.salaire_effectif), moisAnciennete: e.mois_anciennete, personnesCharge: e.personnes_charge }) })));
 }));
 app.post("/api/employees", requireAuth, wrap(async (req, res) => {
-  const { matricule, nom, poste, salaire_base, mois_anciennete = 0, personnes_charge = 0 } = req.body || {};
+  const { matricule, nom, poste, salaire_base, mois_anciennete = 0, personnes_charge = 0, cin, cnss } = req.body || {};
   if (!matricule || !nom || !salaire_base) return res.status(400).json({ error: "matricule, nom et salaire_base requis" });
   const { rows } = await pool.query(
-    `INSERT INTO employee (matricule,nom,poste,salaire_base,mois_anciennete,personnes_charge,company_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [matricule, nom, poste || null, salaire_base, mois_anciennete, personnes_charge, await cid(req)]);
+    `INSERT INTO employee (matricule,nom,poste,salaire_base,mois_anciennete,personnes_charge,cin,cnss,company_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+    [matricule, nom, poste || null, salaire_base, mois_anciennete, personnes_charge, cin || null, cnss || null, await cid(req)]);
   res.status(201).json(rows[0]);
 }));
 app.put("/api/employees/:id", requireAuth, wrap(async (req, res) => {
-  const { nom, poste, cin, salaire_base, mois_anciennete, personnes_charge } = req.body || {};
+  const { nom, poste, cin, cnss, salaire_base, mois_anciennete, personnes_charge } = req.body || {};
   const { rows } = await pool.query(
-    `UPDATE employee SET nom=COALESCE($2,nom), poste=COALESCE($3,poste), cin=COALESCE($4,cin),
+    `UPDATE employee SET nom=COALESCE($2,nom), poste=COALESCE($3,poste), cin=COALESCE($4,cin), cnss=COALESCE($8,cnss),
        salaire_base=COALESCE($5,salaire_base), mois_anciennete=COALESCE($6,mois_anciennete),
        personnes_charge=COALESCE($7,personnes_charge) WHERE id=$1 RETURNING *`,
-    [req.params.id, nom, poste, cin, salaire_base, mois_anciennete, personnes_charge]);
+    [req.params.id, nom, poste, cin, salaire_base, mois_anciennete, personnes_charge, cnss]);
   if (!rows[0]) return res.status(404).json({ error: "Salarié introuvable" });
   res.json(rows[0]);
 }));
@@ -335,18 +335,43 @@ function moneyFR(n) {
   return (neg ? "-" : "") + grouped + "," + dec + " MAD";
 }
 const MOIS_FR = ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
-function renderBulletin(doc, ps, d) {
+function renderBulletin(doc, ps, d, co) {
   const emp = d.employe || {};
+  co = co || {};
   const per = new Date(ps.periode);
   const M = 50, W = 495; // marge / largeur utile
-  // Bandeau
-  doc.rect(M, 45, W, 60).fill("#0f172a");
-  doc.fill("#ffffff").fontSize(15).font("Helvetica-Bold").text("Atlas Constructions SARL", M + 15, 58);
-  doc.fontSize(9).font("Helvetica").fill("#cbd5e1").text("Bulletin de paie — " + MOIS_FR[per.getUTCMonth()] + " " + per.getUTCFullYear(), M + 15, 78);
-  doc.fontSize(10).font("Helvetica-Bold").fill("#ffffff").text(ps.nom || emp.nom || "", M + 250, 58, { width: 230, align: "right" });
-  doc.fontSize(9).font("Helvetica").fill("#cbd5e1").text((ps.matricule || "") + " · " + (ps.poste || ""), M + 250, 76, { width: 230, align: "right" });
+  // Titre
+  doc.fill("#0f172a").font("Helvetica-Bold").fontSize(16).text("BULLETIN DE PAIE", M, 48, { width: W, align: "center" });
+  doc.font("Helvetica").fontSize(9.5).fill("#64748b").text("Mois : " + MOIS_FR[per.getUTCMonth()] + " " + per.getUTCFullYear(), M, 70, { width: W, align: "center" });
 
-  let y = 130;
+  // Blocs ENTREPRISE / SALARIÉ
+  let yTop = 92;
+  const colW = (W - 12) / 2;
+  const boxH = 86;
+  doc.lineWidth(0.8).strokeColor("#cbd5e1");
+  doc.rect(M, yTop, colW, boxH).stroke();
+  doc.rect(M + colW + 12, yTop, colW, boxH).stroke();
+  const lineKV = (x, y, k, v) => {
+    doc.font("Helvetica").fontSize(7.5).fill("#64748b").text(k, x + 8, y, { width: 52 });
+    doc.font("Helvetica-Bold").fontSize(8).fill("#0f172a").text(v || "—", x + 60, y, { width: colW - 68 });
+  };
+  doc.font("Helvetica-Bold").fontSize(8.5).fill("#c2410c").text("ENTREPRISE", M + 8, yTop + 7);
+  let yk = yTop + 20;
+  lineKV(M, yk, "Nom", co.raison_sociale); yk += 13;
+  lineKV(M, yk, "Adresse", [co.adresse, co.ville].filter(Boolean).join(" - ")); yk += co.adresse && co.adresse.length > 30 ? 22 : 13;
+  lineKV(M, yk, "ICE", co.ice); yk += 13;
+  lineKV(M, yk, "CNSS", co.cnss);
+
+  const x2 = M + colW + 12;
+  doc.font("Helvetica-Bold").fontSize(8.5).fill("#c2410c").text("SALARIÉ", x2 + 8, yTop + 7);
+  let yk2 = yTop + 20;
+  lineKV(x2, yk2, "Nom", ps.nom || emp.nom); yk2 += 13;
+  lineKV(x2, yk2, "Poste", ps.poste || emp.poste); yk2 += 13;
+  lineKV(x2, yk2, "Matricule", ps.matricule || emp.matricule); yk2 += 13;
+  lineKV(x2, yk2, "CNSS", emp.cnss || ps.cnss); yk2 += 13;
+  if (emp.cin || ps.cin) lineKV(x2, yk2, "CIN", emp.cin || ps.cin);
+
+  let y = yTop + boxH + 18;
   doc.fill("#0f172a").fontSize(11).font("Helvetica-Bold").text("Éléments de paie", M, y); y += 8;
   doc.moveTo(M, y + 8).lineTo(M + W, y + 8).strokeColor("#e2e8f0").stroke(); y += 16;
 
@@ -355,7 +380,7 @@ function renderBulletin(doc, ps, d) {
     doc.text(label, M + 6, y, { width: 300 });
     if (sub) { doc.font("Helvetica").fontSize(7.5).fill("#94a3b8").text(sub, M + 6, y + 11, { width: 300 }); }
     doc.font(opts.bold ? "Helvetica-Bold" : "Helvetica").fontSize(opts.bold ? 10 : 9.5).fill(opts.color || "#0f172a")
-      .text((opts.neg ? "− " : "") + moneyFR(amount), M + 300, y, { width: W - 300, align: "right" });
+      .text((opts.neg ? "- " : "") + moneyFR(amount), M + 300, y, { width: W - 300, align: "right" });
     y += sub ? 24 : 17;
     if (opts.line) { doc.moveTo(M, y - 4).lineTo(M + W, y - 4).strokeColor("#e2e8f0").stroke(); }
   };
@@ -368,7 +393,7 @@ function renderBulletin(doc, ps, d) {
   row("Frais professionnels", (d.fraisProTaux === 0.35 ? "35 %" : "25 %") + " · abattement IR", d.fraisPro, { neg: true, color: "#be123c" });
   row("Revenu net imposable", "", d.revenuNetImposable, { bold: true, line: true });
   const trLbl = d.trancheIR === 0 ? "exonéré" : "tranche " + Math.round(d.trancheIR * 100) + " %";
-  row("IR (" + trLbl + ")", d.deductionsFamiliales > 0 ? "− " + moneyFR(d.deductionsFamiliales).replace(" MAD", "") + " charges famille" : "barème 2026", d.ir, { neg: true, color: "#be123c" });
+  row("IR (" + trLbl + ")", d.deductionsFamiliales > 0 ? "- " + moneyFR(d.deductionsFamiliales).replace(" MAD", "") + " charges famille" : "barème 2026", d.ir, { neg: true, color: "#be123c" });
 
   // Net à payer
   y += 6;
@@ -378,7 +403,7 @@ function renderBulletin(doc, ps, d) {
   y += 58;
 
   // Charges patronales
-  doc.fill("#0f172a").font("Helvetica-Bold").fontSize(11).text("Charges patronales (≈ 21,09 %)", M, y); y += 18;
+  doc.fill("#0f172a").font("Helvetica-Bold").fontSize(11).text("Charges patronales (env. 21,09 %)", M, y); y += 18;
   const ce = d.cotisationsEmployeur || {};
   row("Prestations sociales", "8,98 %", ce.prestations);
   row("Allocations familiales", "6,40 %", ce.allocations);
@@ -386,19 +411,31 @@ function renderBulletin(doc, ps, d) {
   row("Taxe formation prof.", "1,60 %", ce.tfp);
   row("Coût total employeur", "", d.coutTotal, { bold: true, line: true });
 
-  doc.font("Helvetica").fontSize(7.5).fill("#94a3b8")
-    .text("Document indicatif généré par BTP360 — à faire valider par un expert-comptable avant émission officielle.", M, 760, { width: W, align: "center" });
+  // Mode de paiement
+  y += 8;
+  doc.font("Helvetica").fontSize(8.5).fill("#0f172a")
+    .text("Mode de paiement : Virement bancaire" + (co.rib ? "   |   RIB : " + co.rib : ""), M, y);
+
+  // Signatures
+  let ys = Math.max(y + 34, 700);
+  const sw = (W - 20) / 2;
+  doc.lineWidth(0.8).strokeColor("#cbd5e1");
+  doc.rect(M, ys, sw, 60).stroke();
+  doc.rect(M + sw + 20, ys, sw, 60).stroke();
+  doc.font("Helvetica-Bold").fontSize(8).fill("#64748b").text("SIGNATURE EMPLOYEUR", M, ys + 8, { width: sw, align: "center" });
+  doc.text("SIGNATURE SALARIÉ", M + sw + 20, ys + 8, { width: sw, align: "center" });
 }
 app.get("/api/payslips/:id/pdf", requireAuth, wrap(async (req, res) => {
   const ps = (await pool.query(
-    `SELECT p.*, e.nom, e.matricule, e.poste FROM payslip p JOIN employee e ON e.id=p.employee_id WHERE p.id=$1`,
+    `SELECT p.*, e.nom, e.matricule, e.poste, e.cin, e.cnss, e.company_id FROM payslip p JOIN employee e ON e.id=p.employee_id WHERE p.id=$1`,
     [req.params.id])).rows[0];
   if (!ps) return res.status(404).json({ error: "Bulletin introuvable" });
+  const co = await getCompany(ps.company_id || (await cid(req)));
   const doc = new PDFDocument({ size: "A4", margin: 50 });
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="bulletin-${ps.matricule}.pdf"`);
   doc.pipe(res);
-  renderBulletin(doc, ps, ps.payload || {});
+  renderBulletin(doc, ps, ps.payload || {}, co);
   doc.end();
 }));
 

@@ -163,6 +163,7 @@ CREATE TABLE IF NOT EXISTS bon_commande_ligne (
 -- RH approfondi : organigramme, état civil, évaluations
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS manager_id int REFERENCES employee(id);
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS cin text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS cnss text;
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS date_embauche date;
 CREATE TABLE IF NOT EXISTS evaluation (
   id serial PRIMARY KEY, employee_id int REFERENCES employee(id) ON DELETE CASCADE,

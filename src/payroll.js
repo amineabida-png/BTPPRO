@@ -58,8 +58,9 @@ function calculatePayroll({ salaireBase, moisAnciennete = 0, personnesCharge = 0
   const cnss = r2(cnssPrestations + amo);
 
   const fpBas = brut <= s.fpSeuil;
-  const fraisPro = r2(Math.min(brut * (fpBas ? s.fpTauxBas : s.fpTauxHaut), fpBas ? s.fpCapBas : s.fpCapHaut));
-  const rni = r2(brut - cnss - fraisPro);
+  const baseFP = r2(brut - cnss); // base de calcul des frais pro : brut imposable après cotisations sociales
+  const fraisPro = r2(Math.min(baseFP * (fpBas ? s.fpTauxBas : s.fpTauxHaut), fpBas ? s.fpCapBas : s.fpCapHaut));
+  const rni = r2(baseFP - fraisPro);
 
   let irBrut = 0, tranche = 0;
   for (const t of s.baremeIR) {

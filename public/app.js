@@ -291,7 +291,7 @@ async function editEntity(ep, fields, obj, after) {
   catch (e) { alert(e.message); }
 }
 function findCached(key, id) { return (caches[key] || []).find((x) => x.id === id); }
-function editEmp(id) { const o = findCached("employees", id); if (o) editEntity("/api/employees", [{ key: "nom", label: "Nom" }, { key: "poste", label: "Poste" }, { key: "cin", label: "CIN" }, { key: "mois_anciennete", label: "Ancienneté (mois)", type: "number" }, { key: "personnes_charge", label: "Personnes à charge", type: "number" }], o, () => { clearCache("employees"); renderEmps(); }); }
+function editEmp(id) { const o = findCached("employees", id); if (o) editEntity("/api/employees", [{ key: "nom", label: "Nom" }, { key: "poste", label: "Poste" }, { key: "cin", label: "CIN" }, { key: "cnss", label: "N° CNSS" }, { key: "mois_anciennete", label: "Ancienneté (mois)", type: "number" }, { key: "personnes_charge", label: "Personnes à charge", type: "number" }], o, () => { clearCache("employees"); renderEmps(); }); }
 function editChantier(id) { const o = findCached("chantiers", id); if (o) editEntity("/api/chantiers", [{ key: "code", label: "Code" }, { key: "nom", label: "Nom" }, { key: "client", label: "Client" }, { key: "ville", label: "Ville" }, { key: "budget_prevu", label: "Budget prévu", type: "number" }, { key: "statut", label: "Statut", type: "select", options: opt(["prospect", "en_cours", "suspendu", "clos"]) }], o, () => { clearCache("chantiers"); renderChantiers(); }); }
 function editArticle(id) { const o = findCached("articles", id); if (o) editEntity("/api/articles", [{ key: "reference", label: "Référence" }, { key: "designation", label: "Désignation" }, { key: "unite", label: "Unité" }, { key: "seuil", label: "Seuil d'alerte", type: "number" }], o, () => renderStock()); }
 function editFournisseur(id) { const o = findCached("fournisseurs", id); if (o) editEntity("/api/fournisseurs", [{ key: "raison_sociale", label: "Raison sociale" }, { key: "ice", label: "ICE" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }, { key: "email", label: "Email" }, { key: "conditions_paiement", label: "Conditions de paiement" }], o, () => renderFournisseurs()); }
@@ -397,7 +397,7 @@ async function renderEmps() {
 }
 async function addEmp() {
   const d = await modalForm("Nouveau salarié", [
-    { key: "matricule", label: "Matricule" }, { key: "nom", label: "Nom complet" }, { key: "poste", label: "Poste" }, { key: "cin", label: "CIN" },
+    { key: "matricule", label: "Matricule" }, { key: "nom", label: "Nom complet" }, { key: "poste", label: "Poste" }, { key: "cin", label: "CIN" }, { key: "cnss", label: "N° CNSS" },
     { key: "salaire_base", label: "Salaire de base", type: "number" }, { key: "mois_anciennete", label: "Ancienneté (mois)", type: "number" }, { key: "personnes_charge", label: "Personnes à charge", type: "number" }]);
   if (!d) return;
   try { await api("/api/employees", { method: "POST", body: JSON.stringify(d) }); renderEmps(); } catch (e) { alert(e.message); }
@@ -460,11 +460,12 @@ async function renderPaie() {
   const c = await api("/api/payroll/preview", { method: "POST", body: JSON.stringify({ salaireBase: Number(e.salaire_base), moisAnciennete: e.mois_anciennete, personnesCharge: e.personnes_charge }) });
   const fpTaux = c.fraisProTaux === 0.35 ? "35 %" : "25 %", trLbl = c.trancheIR === 0 ? "exonéré" : "tranche " + Math.round(c.trancheIR * 100) + " %";
   const pick = emps.map((x) => `<option value="${x.id}" ${x.id === e.id ? "selected" : ""}>${x.matricule} — ${x.nom}</option>`).join("");
+  const aco = (window._companies || []).find((x) => String(x.id) === String(activeCompany)) || {};
   V().innerHTML = `<div class="bar"><div><h1>Bulletin de paie</h1><div class="sub">${MOIS[period.mois - 1]} ${period.annee}</div></div>
     <div style="display:flex;gap:8px;align-items:center"><select id="emp-pick" onchange="selected=Number(this.value);renderPaie()">${pick}</select>
     <button class="btn sm" onclick="genRun()">Générer la paie du mois</button></div></div>
     <div class="sheet">
-      <div class="sheet-head"><div><div style="font-weight:600">🏢 Atlas Constructions SARL</div><div class="t">Bulletin — ${MOIS[period.mois - 1]} ${period.annee}</div></div>
+      <div class="sheet-head"><div><div style="font-weight:600">🏢 ${aco.raison_sociale || "Ma société"}</div><div class="t">Bulletin — ${MOIS[period.mois - 1]} ${period.annee}</div></div>
         <div style="text-align:right"><div style="font-weight:600">${e.nom}</div><div class="t mono">${e.matricule} · ${e.poste || ""}</div></div></div>
       <div class="cols">
         <div><div class="colhead">Gains</div>
