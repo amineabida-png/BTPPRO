@@ -1,7 +1,7 @@
 {
-  "name": "BTPPro — ERP BTP Maroc",
-  "short_name": "BTPPro",
-  "description": "ERP BTP marocain : devis, factures, paie, chantiers, trésorerie.",
+  "name": "BTP360 — La gestion de BTP à 360°",
+  "short_name": "BTP360",
+  "description": "BTP360 — la gestion de BTP à 360° : devis, factures, paie, chantiers, trésorerie.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

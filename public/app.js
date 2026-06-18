@@ -65,7 +65,7 @@ function showPaywall(sub) {
   el("app").classList.add("hide"); el("login").classList.add("hide");
   let o = el("paywall"); if (!o) { o = document.createElement("div"); o.id = "paywall"; document.body.appendChild(o); }
   o.innerHTML = `<div class="pw-card"><div class="pw-ico">🔒</div><h2>Abonnement expiré</h2>
-    <p>Votre accès à BTPPro est actuellement <b>suspendu ou expiré</b>${sub && sub.plan ? " (formule " + sub.plan + ")" : ""}.</p>
+    <p>Votre accès à BTP360 est actuellement <b>suspendu ou expiré</b>${sub && sub.plan ? " (formule " + sub.plan + ")" : ""}.</p>
     <p>Pour réactiver votre compte, contactez votre fournisseur.</p>
     <div class="pw-prix">${prix}</div>
     <button class="btn" onclick="logout();document.getElementById('paywall').remove()">Retour à la connexion</button></div>`;

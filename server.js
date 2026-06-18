@@ -131,7 +131,7 @@ app.post("/api/2fa/setup", requireAuth, wrap(async (req, res) => {
   const u = (await pool.query("SELECT email FROM app_user WHERE id=$1", [req.user.sub])).rows[0];
   const secret = authenticator.generateSecret();
   await pool.query("UPDATE app_user SET totp_secret=$2, totp_enabled=false WHERE id=$1", [req.user.sub, secret]);
-  const uri = authenticator.keyuri(u.email, "BTPPro Maroc", secret);
+  const uri = authenticator.keyuri(u.email, "BTP360", secret);
   const qr = await QRCode.toDataURL(uri);
   res.json({ qr, secret, uri });
 }));
@@ -387,7 +387,7 @@ function renderBulletin(doc, ps, d) {
   row("Coût total employeur", "", d.coutTotal, { bold: true, line: true });
 
   doc.font("Helvetica").fontSize(7.5).fill("#94a3b8")
-    .text("Document indicatif généré par BTPPro — à faire valider par un expert-comptable avant émission officielle.", M, 760, { width: W, align: "center" });
+    .text("Document indicatif généré par BTP360 — à faire valider par un expert-comptable avant émission officielle.", M, 760, { width: W, align: "center" });
 }
 app.get("/api/payslips/:id/pdf", requireAuth, wrap(async (req, res) => {
   const ps = (await pool.query(
@@ -1771,7 +1771,7 @@ app.get("/api/bordereaux/:id/excel", requireAuth, wrap(async (req, res) => {
   if (!b) return res.status(404).json({ error: "Introuvable" });
   const co = await getCompany(b.company_id || (await cid(req)));
   const contenu = Array.isArray(b.contenu) ? b.contenu : JSON.parse(b.contenu || "[]");
-  const wb = new ExcelJS.Workbook(); wb.creator = "BTPPro";
+  const wb = new ExcelJS.Workbook(); wb.creator = "BTP360";
   const ws = wb.addWorksheet("Bordereau des prix", { views: [{ state: "frozen", ySplit: 5, showGridLines: false }], pageSetup: { fitToWidth: 1, orientation: "portrait", margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } } });
   ws.columns = [{ width: 10 }, { width: 58 }, { width: 8 }, { width: 12 }, { width: 16 }, { width: 18 }];
   const thin = { style: "thin", color: { argb: "FFBFBFBF" } }; const border = { top: thin, left: thin, bottom: thin, right: thin };
@@ -1864,7 +1864,7 @@ app.get("/api/bordereaux/:id/pdf", requireAuth, wrap(async (req, res) => {
 // ══════════════ BORDEREAU DES PRIX (modèle vierge, Excel) ══════════════
 app.get("/api/bordereau/template", requireAuth, wrap(async (req, res) => {
   const co = await getCompany(await cid(req));
-  const wb = new ExcelJS.Workbook(); wb.creator = "BTPPro";
+  const wb = new ExcelJS.Workbook(); wb.creator = "BTP360";
   const ws = wb.addWorksheet("Bordereau des prix", { views: [{ state: "frozen", ySplit: 5, showGridLines: false }], pageSetup: { fitToWidth: 1, orientation: "portrait", margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } } });
   ws.columns = [{ width: 10 }, { width: 58 }, { width: 8 }, { width: 12 }, { width: 16 }, { width: 18 }];
   const thin = { style: "thin", color: { argb: "FFBFBFBF" } };
@@ -1906,7 +1906,7 @@ app.get("/api/bordereau/template", requireAuth, wrap(async (req, res) => {
 app.post("/api/export/xlsx", requireAuth, wrap(async (req, res) => {
   const { title = "Export", headers = [], rows = [] } = req.body || {};
   const wb = new ExcelJS.Workbook();
-  wb.creator = "BTPPro"; wb.created = new Date();
+  wb.creator = "BTP360"; wb.created = new Date();
   const ws = wb.addWorksheet((title || "Export").replace(/[\\\/\?\*\[\]:]/g, " ").slice(0, 30) || "Export");
   ws.addRow(headers);
   const hr = ws.getRow(1);
@@ -1934,5 +1934,5 @@ app.get("*", (_req, res) => res.sendFile(path.join(__dirname, "public", "index.h
 
 const PORT = process.env.PORT || 3000;
 initDb()
-  .then(() => app.listen(PORT, () => console.log(`🚀 BTPPro sur le port ${PORT}`)))
+  .then(() => app.listen(PORT, () => console.log(`🚀 BTP360 sur le port ${PORT}`)))
   .catch((err) => { console.error("Échec init base:", err); process.exit(1); });

@@ -1,5 +1,5 @@
 /* ============================================================
-   BTPPro — Identité "chantier" : noir asphalte + jaune sécurité
+   BTP360 — Identité "chantier" : noir asphalte + jaune sécurité
    Signature : bandes de danger jaune/noir · titres Oswald
    ============================================================ */
 :root{
@@ -267,3 +267,7 @@ thead th[data-sortable]:hover{color:var(--asphalt)}
 .pw-ico{font-size:48px}
 .pw-card h2{margin:10px 0}
 .pw-prix{background:var(--hazard);border-radius:10px;padding:12px;font-weight:700;margin:16px 0}
+
+/* ---- Slogan de marque (sidebar) ---- */
+.brand-slogan{color:#F5B301;font-size:10.5px;font-weight:600;letter-spacing:.02em;padding:0 8px 12px;margin-top:-6px}
+@media(max-width:860px){ .brand-slogan{padding:0 8px 10px} }
