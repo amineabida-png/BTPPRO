@@ -40,6 +40,7 @@ function domainOf(p) {
   if (p.startsWith("/api/materiel") || p.startsWith("/api/rapports")) return "chantiers";
   if (p.startsWith("/api/alertes")) return null;
   if (p.startsWith("/api/compta")) return "rentabilite";
+  if (p.startsWith("/api/bordereau")) return "devis";
   if (p.startsWith("/api/activite") || p.startsWith("/api/onboarding")) return "admin";
   if (p.startsWith("/api/articles") || p.startsWith("/api/stock")) return "stock";
   if (p.startsWith("/api/commandes") || p.startsWith("/api/demandes-achat") || p.startsWith("/api/bons-commande")) return "achats";
@@ -1592,6 +1593,47 @@ app.get("/api/integrations/efacture", requireAuth, wrap(async (req, res) => {
   res.setHeader("Content-Type", "application/json");
   res.setHeader("Content-Disposition", `attachment; filename="preparation-efacture-${annee}-${String(mois).padStart(2, "0")}.json"`);
   res.end(JSON.stringify(out, null, 2));
+}));
+
+// ══════════════ BORDEREAU DES PRIX (modèle vierge, Excel) ══════════════
+app.get("/api/bordereau/template", requireAuth, wrap(async (req, res) => {
+  const co = await getCompany(await cid(req));
+  const wb = new ExcelJS.Workbook(); wb.creator = "BTPPro";
+  const ws = wb.addWorksheet("Bordereau des prix", { views: [{ state: "frozen", ySplit: 5, showGridLines: false }], pageSetup: { fitToWidth: 1, orientation: "portrait", margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } } });
+  ws.columns = [{ width: 10 }, { width: 58 }, { width: 8 }, { width: 12 }, { width: 16 }, { width: 18 }];
+  const thin = { style: "thin", color: { argb: "FFBFBFBF" } };
+  const border = { top: thin, left: thin, bottom: thin, right: thin };
+  ws.mergeCells("A1:F1"); const t = ws.getCell("A1"); t.value = co.raison_sociale || "Société"; t.font = { bold: true, size: 14 }; t.alignment = { horizontal: "center" };
+  ws.mergeCells("A2:F2"); const s = ws.getCell("A2"); s.value = "BORDEREAU DES PRIX — DÉTAIL ESTIMATIF"; s.font = { bold: true, size: 12, color: { argb: "FF1A1300" } }; s.alignment = { horizontal: "center" }; s.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF5B301" } };
+  ws.mergeCells("A3:F3"); ws.getCell("A3").value = "Marché n° : ____________          Maître d'ouvrage : ____________________          Objet : ____________________________"; ws.getRow(3).height = 18;
+  ws.getRow(4).height = 6;
+  const head = ["N° Prix", "Désignation des prestations", "U", "Quantité", "P.U. HT", "Prix total HT"];
+  const hr = ws.getRow(5);
+  head.forEach((h, i) => { const c = hr.getCell(i + 1); c.value = h; c.font = { bold: true, color: { argb: "FFFFFFFF" } }; c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF15171C" } }; c.alignment = { horizontal: i === 1 ? "left" : "center", vertical: "middle", wrapText: true }; c.border = border; });
+  hr.height = 26;
+  let r = 6;
+  const nbChap = Math.min(Math.max(parseInt(req.query.chapitres, 10) || 2, 1), 20);
+  const nbLignes = Math.min(Math.max(parseInt(req.query.lignes, 10) || 14, 1), 50);
+  const roman = (n) => ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV", "XVI", "XVII", "XVIII", "XIX", "XX"][n - 1] || String(n);
+  const sectionRow = (label) => { ws.mergeCells(`A${r}:F${r}`); const c = ws.getCell(`A${r}`); c.value = label; c.font = { bold: true }; c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEDEFF2" } }; for (let k = 1; k <= 6; k++) ws.getRow(r).getCell(k).border = border; r++; };
+  const emptyRows = (n) => { for (let k = 0; k < n; k++) { const row = ws.getRow(r); row.getCell(1).alignment = { horizontal: "center" }; row.getCell(3).alignment = { horizontal: "center" }; row.getCell(4).alignment = { horizontal: "center" }; row.getCell(4).numFmt = "#,##0.00"; row.getCell(5).numFmt = "#,##0.00"; row.getCell(6).numFmt = "#,##0.00"; row.getCell(6).value = { formula: `IF(OR(D${r}="",E${r}=""),"",D${r}*E${r})` }; row.getCell(2).alignment = { wrapText: true }; for (let c = 1; c <= 6; c++) row.getCell(c).border = border; r++; } };
+  const subRows = [];
+  const subtotalRow = (label, formula) => { ws.mergeCells(`A${r}:E${r}`); const l = ws.getCell(`A${r}`); l.value = label; l.alignment = { horizontal: "right" }; l.font = { bold: true, italic: true }; l.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF7F3E3" } }; const v = ws.getCell(`F${r}`); v.value = { formula }; v.numFmt = "#,##0.00"; v.font = { bold: true }; v.fill = l.fill; for (let c = 1; c <= 6; c++) ws.getRow(r).getCell(c).border = border; subRows.push(r); r++; };
+  for (let i = 1; i <= nbChap; i++) {
+    sectionRow(`CHAPITRE ${roman(i)} — (à renommer)`);
+    const cStart = r; emptyRows(nbLignes); const cEnd = r - 1;
+    subtotalRow(`Sous-total Chapitre ${roman(i)}`, `SUM(F${cStart}:F${cEnd})`);
+  }
+  r++;
+  const totalRow = (label, formula, strong) => { ws.mergeCells(`A${r}:E${r}`); const l = ws.getCell(`A${r}`); l.value = label; l.alignment = { horizontal: "right" }; l.font = { bold: !!strong, size: strong ? 12 : 11 }; const v = ws.getCell(`F${r}`); v.value = { formula }; v.numFmt = "#,##0.00"; v.font = { bold: !!strong, size: strong ? 12 : 11 }; if (strong) { l.fill = v.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF5B301" } }; } for (let c = 1; c <= 6; c++) ws.getRow(r).getCell(c).border = border; r++; };
+  const htRow = r; totalRow("TOTAL GÉNÉRAL HORS T.V.A.", subRows.map((rr) => `F${rr}`).join("+"));
+  const tvaRow = r; totalRow("T.V.A. 20 %", `F${htRow}*0.2`);
+  totalRow("TOTAL GÉNÉRAL T.T.C.", `F${htRow}+F${tvaRow}`, true);
+  r++;
+  ws.mergeCells(`A${r}:F${r}`); const m = ws.getCell(`A${r}`); m.value = "Arrêté le présent bordereau à la somme T.T.C. de (en toutes lettres) : ............................................................................................................"; m.font = { italic: true }; m.alignment = { wrapText: true }; ws.getRow(r).height = 28;
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="bordereau-prix-vierge.xlsx"`);
+  await wb.xlsx.write(res); res.end();
 }));
 
 // ══════════════ EXPORT EXCEL (générique) ══════════════

@@ -618,12 +618,29 @@ async function delOuvrage(id) { if (confirm("Supprimer cet ouvrage ?")) { await 
 let devisLignes = [];
 let ouvragesCache = [];
 let devisFiltre = "";
+function bordereauDialog() {
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal"><h3>Bordereau des prix — modèle vierge</h3>
+    <div class="form" style="grid-template-columns:1fr 1fr">
+      <div class="field"><label>Nombre de chapitres</label><input type="number" id="bd-ch" value="3" min="1" max="20"></div>
+      <div class="field"><label>Lignes par chapitre</label><input type="number" id="bd-li" value="14" min="1" max="50"></div>
+    </div>
+    <div class="muted" style="font-size:12px;margin-top:8px">Chaque chapitre est généré complet : titre (à renommer), lignes vides à remplir et <b>sous-total automatique</b>. Les totaux HT / TVA 20 % / TTC se calculent seuls.</div>
+    <div class="mactions"><button class="btn ghost" onclick="el('modal-root').innerHTML=''">Annuler</button><button class="btn" onclick="genBordereau()">⬇️ Télécharger</button></div>
+  </div></div>`;
+}
+function genBordereau() {
+  const ch = Math.min(Math.max(parseInt(el("bd-ch").value, 10) || 2, 1), 20);
+  const li = Math.min(Math.max(parseInt(el("bd-li").value, 10) || 14, 1), 50);
+  downloadDoc(`/api/bordereau/template?chapitres=${ch}&lignes=${li}`, "bordereau-prix-vierge.xlsx");
+  el("modal-root").innerHTML = "";
+}
 async function renderDevis() {
   const all = await api("/api/devis");
   const list = devisFiltre ? all.filter((d) => (d.statut || "brouillon") === devisFiltre) : all;
   const stOpt = (cur) => ["brouillon", "envoye", "accepte", "refuse", "facture"].map((s) => `<option value="${s}" ${cur === s ? "selected" : ""}>${s}</option>`).join("");
   V().innerHTML = `<div class="bar"><div><h1>Devis</h1><div class="sub">Déboursé sec · coefficient de marge · prix de vente · TVA 20 %.</div></div>
     <div style="display:flex;gap:8px;align-items:center"><select onchange="devisFiltre=this.value;renderDevis()"><option value="">Tous les statuts</option>${["brouillon", "envoye", "accepte", "refuse", "facture"].map((s) => `<option value="${s}" ${devisFiltre === s ? "selected" : ""}>${s}</option>`).join("")}</select>
+    <button class="btn sm ghost" onclick="bordereauDialog()">📋 Bordereau vierge</button>
     <button class="btn sm" onclick="newDevis()">+ Nouveau devis</button></div></div>
     <div class="card"><table><thead><tr><th>N°</th><th>Client</th><th>Objet</th><th class="r">TTC</th><th>Statut</th><th></th></tr></thead><tbody>
     ${list.length ? list.map((d) => `<tr><td class="mono">${d.numero || d.id}</td><td>${d.client || ""}</td><td>${d.objet || ""}</td><td class="r mono">${fmt(d.total_ttc)}</td>
