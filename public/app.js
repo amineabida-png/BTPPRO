@@ -1377,7 +1377,7 @@ async function refreshAlertBadge() {
 }
 
 /* ===================== Super Admin (SaaS) ===================== */
-const PLAN_LABEL = { "30j": "30 jours", "1an": "1 an", "avie": "À vie" };
+const PLAN_LABEL = { "48h": "Essai 48h", "30j": "30 jours", "1an": "1 an", "avie": "À vie" };
 async function renderSuperAdmin() {
   const list = await api("/api/admin/overview");
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString("fr-FR") : "—";
@@ -1397,9 +1397,10 @@ async function renderSuperAdmin() {
       <td>${c.expire ? '<span class="pill" style="background:var(--rose-bg);color:var(--rose)">Expiré</span>' : '<span class="pill" style="background:var(--green-bg);color:var(--green)">Actif</span>'}</td>
       <td class="r">${c.nb_users}</td>
       <td class="r">
-        <select class="stsel" onchange="setPlan(${c.id},this.value)"><option value="">Activer…</option><option value="30j">30 jours (99)</option><option value="1an">1 an (990)</option><option value="avie">À vie (3990)</option></select>
+        <select class="stsel" onchange="setPlan(${c.id},this.value)"><option value="">Activer…</option><option value="48h">Essai 48h (gratuit)</option><option value="30j">30 jours (99)</option><option value="1an">1 an (990)</option><option value="avie">À vie (3990)</option></select>
         <button class="btn sm ${c.actif ? "danger" : ""}" onclick="toggleEtat(${c.id},${c.actif ? "false" : "true"})">${c.actif ? "Suspendre" : "Réactiver"}</button>
         <button class="btn sm ghost" onclick="adminUsers(${c.id},'${(c.raison_sociale || "").replace(/'/g, "")}')">👤 Utilisateurs</button>
+        <button class="btn sm danger" onclick="delCompany(${c.id},'${(c.raison_sociale || "").replace(/'/g, "")}')">🗑 Supprimer</button>
       </td></tr>`).join("")}
     </tbody></table></div>
   <div class="muted" style="margin-top:12px;font-size:13px">💡 L'activation est manuelle : tu encaisses le paiement du client, puis tu choisis sa formule ici. Les mises à jour de l'application (suite aux retours des clients) se déploient en poussant le code sur GitHub.</div>`;
@@ -1411,6 +1412,11 @@ async function setPlan(id, plan) {
 }
 async function toggleEtat(id, actif) {
   try { await api("/api/admin/companies/" + id + "/etat", { method: "POST", body: JSON.stringify({ actif }) }); renderSuperAdmin(); } catch (e) { alert(e.message); }
+}
+async function delCompany(id, nom) {
+  if (!confirm("⚠️ SUPPRIMER définitivement le client « " + nom + " » ?\n\nToutes ses données (chantiers, devis, factures, paie, utilisateurs…) seront EFFACÉES. Cette action est irréversible.")) return;
+  if (!confirm("Dernière confirmation : supprimer « " + nom + " » et tout son contenu ?")) return;
+  try { await api("/api/admin/companies/" + id, { method: "DELETE" }); alert("Client supprimé."); renderSuperAdmin(); } catch (e) { alert(e.message); }
 }
 async function adminUsers(companyId, nom) {
   const users = await api("/api/admin/users?company_id=" + companyId);

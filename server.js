@@ -88,7 +88,7 @@ async function defaultCompany() {
 const cid = async (req) => (req.user && req.user.company_id) || req.companyId || (await defaultCompany());
 
 // ── Abonnement (SaaS) ──
-const PLAN_DUREE = { "30j": 30, "1an": 365, "avie": null };
+const PLAN_DUREE = { "48h": 2, "30j": 30, "1an": 365, "avie": null };
 const subActive = (co) => co && co.actif !== false && (!co.abonnement_fin || new Date(co.abonnement_fin) > new Date());
 const subCache = new Map();
 async function companyActive(id) {
@@ -1541,8 +1541,8 @@ app.post("/api/onboarding", requireAuth, wrap(async (req, res) => {
     await conn.query("BEGIN");
     const co = (await conn.query(
       `INSERT INTO company (raison_sociale,ice,adresse,ville,telephone,email,rc,if_fiscal,patente,cnss,rib,plan,abonnement_fin,actif)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'30j',$12,true) RETURNING *`,
-      [company.raison_sociale, company.ice || null, company.adresse || null, company.ville || null, company.telephone || null, company.email || null, company.rc || null, company.if_fiscal || null, company.patente || null, company.cnss || null, company.rib || null, new Date(Date.now() + 30 * 86400000)])).rows[0];
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'48h',$12,true) RETURNING *`,
+      [company.raison_sociale, company.ice || null, company.adresse || null, company.ville || null, company.telephone || null, company.email || null, company.rc || null, company.if_fiscal || null, company.patente || null, company.cnss || null, company.rib || null, new Date(Date.now() + 2 * 86400000)])).rows[0];
     const hash = await bcrypt.hash(user.password, 10);
     const u = (await conn.query(
       `INSERT INTO app_user (email,password_hash,full_name,role,company_id) VALUES ($1,$2,$3,'DIRECTEUR',$4) RETURNING id,email,full_name,role,company_id`,
@@ -1680,6 +1680,38 @@ app.delete("/api/admin/users/:id", requireAuth, wrap(async (req, res) => {
   if (!requireSuper(req, res)) return;
   if (Number(req.params.id) === req.user.sub) return res.status(400).json({ error: "Impossible de supprimer votre propre compte" });
   await pool.query("DELETE FROM app_user WHERE id=$1", [req.params.id]); res.json({ ok: true });
+}));
+// Suppression complète d'un client (société + utilisateurs + toutes ses données)
+app.delete("/api/admin/companies/:id", requireAuth, wrap(async (req, res) => {
+  if (!requireSuper(req, res)) return;
+  const id = Number(req.params.id);
+  const total = Number((await pool.query("SELECT count(*)::int c FROM company")).rows[0].c);
+  if (total <= 1) return res.status(400).json({ error: "Impossible de supprimer la dernière société." });
+  const order = [
+    "DELETE FROM paiement WHERE company_id=$1", "DELETE FROM facture WHERE company_id=$1", "DELETE FROM devis WHERE company_id=$1",
+    "DELETE FROM payroll_run WHERE company_id=$1", "DELETE FROM bon_commande WHERE company_id=$1", "DELETE FROM demande_achat WHERE company_id=$1",
+    "DELETE FROM pointage WHERE company_id=$1", "DELETE FROM tache WHERE company_id=$1", "DELETE FROM materiel WHERE company_id=$1",
+    "DELETE FROM rapport_chantier WHERE company_id=$1", "DELETE FROM bordereau WHERE company_id=$1", "DELETE FROM document WHERE company_id=$1",
+    "DELETE FROM controle_securite WHERE company_id=$1", "DELETE FROM incident WHERE company_id=$1", "DELETE FROM epi WHERE company_id=$1",
+    "DELETE FROM evaluation WHERE company_id=$1", "DELETE FROM conge WHERE company_id=$1", "DELETE FROM sous_traitant WHERE company_id=$1",
+    "DELETE FROM fournisseur WHERE company_id=$1", "DELETE FROM ouvrage WHERE company_id=$1", "DELETE FROM article WHERE company_id=$1",
+    "DELETE FROM chantier WHERE company_id=$1", "DELETE FROM employee WHERE company_id=$1", "DELETE FROM activite WHERE company_id=$1",
+    "DELETE FROM app_user WHERE company_id=$1",
+  ];
+  const conn = await pool.connect();
+  try {
+    await conn.query("BEGIN");
+    for (const sql of order) {
+      await conn.query("SAVEPOINT sp");
+      try { await conn.query(sql, [id]); await conn.query("RELEASE SAVEPOINT sp"); }
+      catch { await conn.query("ROLLBACK TO SAVEPOINT sp"); await conn.query("RELEASE SAVEPOINT sp"); }
+    }
+    const del = await conn.query("DELETE FROM company WHERE id=$1 RETURNING id", [id]);
+    if (!del.rowCount) { await conn.query("ROLLBACK"); return res.status(404).json({ error: "Société introuvable" }); }
+    await conn.query("COMMIT");
+    subCache.delete(id); DEFAULT_COMPANY_ID = null;
+    res.json({ ok: true });
+  } catch (e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
 }));
 
 // ══════════════ BORDEREAU — module de saisie (chapitres + lignes) ══════════════
