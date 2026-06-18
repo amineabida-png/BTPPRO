@@ -16,7 +16,7 @@ const { makeCrud } = require("./src/crud");
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(path.join(__dirname, "public"), { setHeaders: (res, p) => { if (p.endsWith(".webmanifest")) res.setHeader("Content-Type", "application/manifest+json"); if (p.endsWith("sw.js")) res.setHeader("Cache-Control", "no-cache"); } }));
 
 const wrap = (fn) => (req, res) => fn(req, res).catch((err) => {
   console.error(err); res.status(500).json({ error: "Erreur serveur", detail: err.message });

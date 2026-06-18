@@ -2,7 +2,15 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#15171C" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="BTPPro" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
 <title>BTPPro · ERP BTP Maroc 2026</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -25,6 +33,11 @@
 </div>
 
 <div id="app" class="app hide">
+  <div class="mtop">
+    <button class="burger" aria-label="Menu" onclick="document.getElementById('app').classList.toggle('side-open')">☰</button>
+    <span class="mtop-brand"><span class="logo sm">🏗️</span> BTPPro</span>
+  </div>
+  <div class="scrim" onclick="document.getElementById('app').classList.remove('side-open')"></div>
   <aside class="side">
     <div class="brand"><span class="logo">🏗️</span> BTPPro</div>
     <select id="company-switch" class="company-switch" onchange="switchCompany(this.value)"></select>

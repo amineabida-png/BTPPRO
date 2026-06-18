@@ -149,7 +149,7 @@ async function loadPerms() {
 }
 
 /* ===================== Navigation ===================== */
-document.querySelectorAll(".nav").forEach((b) => (b.onclick = () => show(b.dataset.view)));
+document.querySelectorAll(".nav").forEach((b) => (b.onclick = () => { show(b.dataset.view); document.getElementById("app").classList.remove("side-open"); }));
 const ROUTES = {
   dash: renderDash, rentabilite: renderRentabilite, users: renderUsers, emps: renderEmps,
   organigramme: renderOrganigramme, paie: renderPaie, conges: renderConges, runs: renderRuns,
@@ -1635,3 +1635,8 @@ function shiftIntg(dlt) { let m = intgPeriod.mois + dlt, y = intgPeriod.annee; i
 // Réapplique recherche + tri après chaque rendu (y compris re-rendus internes)
 new MutationObserver(() => enhanceView()).observe(el("view"), { childList: true, subtree: true });
 if (token && me) enterApp();
+
+/* PWA : enregistrement du service worker (installation écran d'accueil + cache) */
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => { navigator.serviceWorker.register("/sw.js").catch(() => {}); });
+}
