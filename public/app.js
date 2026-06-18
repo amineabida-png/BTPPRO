@@ -534,6 +534,19 @@ async function downloadDoc(path, filename) {
     a.remove(); URL.revokeObjectURL(url);
   } catch (e) { alert(e.message); }
 }
+// Ouvre le PDF dans un nouvel onglet (aperçu/impression du vrai document, avec en-tête société, sans interface)
+async function openDoc(path) {
+  const w = window.open("", "_blank");
+  if (w) { try { w.document.write("<!doctype html><meta charset='utf-8'><title>Document</title><body style='font-family:sans-serif;color:#555;padding:24px'>Préparation du document…</body>"); } catch (_) {} }
+  try {
+    const res = await fetch(path, { headers: { Authorization: "Bearer " + token, "X-Company-Id": activeCompany || "" } });
+    if (!res.ok) { if (w) w.close(); alert("Erreur lors de la génération du PDF"); return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    if (w) { w.location.href = url; } else { window.location.href = url; }
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) { if (w) w.close(); alert(e.message); }
+}
 
 /* ===================== Utilisateurs (RBAC) ===================== */
 async function renderUsers() {
@@ -1513,7 +1526,7 @@ function renderBordEditor() {
   const b = bordEdit;
   V().innerHTML = `
   <div class="bar"><div><h1>${b.id ? "Bordereau " + (b.numero || "") : "Nouveau bordereau"}</h1><div class="sub">Ajoute tes chapitres et tes lignes — les totaux se calculent en direct</div></div>
-    <div style="display:flex;gap:8px"><button class="btn ghost" onclick="show('bordereaux')">← Retour</button><button class="btn" onclick="saveBordereau()">💾 Enregistrer</button></div></div>
+    <div style="display:flex;gap:8px"><button class="btn ghost" onclick="show('bordereaux')">← Retour</button><button class="btn ghost" onclick="printBordereau()">🖨️ Imprimer (PDF)</button><button class="btn" onclick="saveBordereau()">💾 Enregistrer</button></div></div>
   <div class="card" style="margin-bottom:14px"><div class="form" style="grid-template-columns:1fr 1fr 1fr">
     <div class="field"><label>Marché n°</label><input data-h="marche" value="${bordEsc(b.marche)}" oninput="bordSync(this)"></div>
     <div class="field"><label>Maître d'ouvrage</label><input data-h="maitre_ouvrage" value="${bordEsc(b.maitre_ouvrage)}" oninput="bordSync(this)"></div>
@@ -1577,6 +1590,15 @@ async function saveBordereau() {
     bordEdit.id = saved.id; bordEdit.numero = saved.numero;
     alert("Bordereau " + (saved.numero || "") + " enregistré. Tu peux l'exporter en Excel ou PDF depuis la liste.");
     renderBordEditor();
+  } catch (e) { alert(e.message); }
+}
+async function printBordereau() {
+  const b = bordEdit;
+  const payload = { marche: b.marche, maitre_ouvrage: b.maitre_ouvrage, objet: b.objet, client: b.client, client_ice: b.client_ice, contenu: b.chapitres };
+  try {
+    const saved = b.id ? await api("/api/bordereaux/" + b.id, { method: "PUT", body: JSON.stringify(payload) }) : await api("/api/bordereaux", { method: "POST", body: JSON.stringify(payload) });
+    bordEdit.id = saved.id; bordEdit.numero = saved.numero;
+    await openDoc("/api/bordereaux/" + saved.id + "/pdf");
   } catch (e) { alert(e.message); }
 }
 async function delBordereau(id) { if (confirm("Supprimer ce bordereau ?")) { await api("/api/bordereaux/" + id, { method: "DELETE" }); renderBordereaux(); } }
