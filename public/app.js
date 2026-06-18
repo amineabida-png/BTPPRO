@@ -120,7 +120,7 @@ const VIEW_DOMAIN = {
   integrations: null, users: "admin", societe: "admin",
   planning: "chantiers", pointage: "chantiers", tresorerie: "facturation",
   materiel: "chantiers", rapports: "chantiers", alertes: null,
-  compta: "rentabilite", journal: "admin", onboarding: "admin",
+  compta: "rentabilite", journal: "admin", onboarding: "admin", bordereaux: "devis",
 };
 let myPerms = ["*"];
 function allowed(domain) { return domain == null || myPerms.includes("*") || myPerms.includes(domain); }
@@ -147,7 +147,7 @@ const ROUTES = {
   integrations: renderIntegrations, societe: renderSociete,
   planning: renderPlanning, pointage: renderPointage, tresorerie: renderTresorerie,
   materiel: renderMateriel, rapports: renderRapports, alertes: renderAlertes,
-  compta: renderCompta, journal: renderActivite, onboarding: renderOnboarding,
+  compta: renderCompta, journal: renderActivite, onboarding: renderOnboarding, bordereaux: renderBordereaux,
 };
 async function show(v) {
   if (!allowed(VIEW_DOMAIN[v])) { V().innerHTML = `<div class="warn">⛔ Accès non autorisé pour votre rôle.</div>`; return; }
@@ -1363,6 +1363,96 @@ async function renderAlertes() {
 async function refreshAlertBadge() {
   try { const d = await api("/api/alertes"); const nav = document.querySelector('.nav[data-view="alertes"]'); if (nav) nav.innerHTML = "🔔 Alertes" + (d.total ? ` <span class="badge">${d.total}</span>` : ""); } catch { /* ignore */ }
 }
+
+/* ===================== Bordereau des prix (module de saisie) ===================== */
+let bordEdit = null;
+const bordEsc = (v) => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+const bordNewModel = () => ({ marche: "", maitre_ouvrage: "", objet: "", client: "", client_ice: "", chapitres: [{ titre: "", lignes: [{ num: "", designation: "", unite: "", quantite: "", pu: "" }] }] });
+async function renderBordereaux() {
+  const list = await api("/api/bordereaux");
+  V().innerHTML = `<div class="bar"><div><h1>Bordereaux des prix</h1><div class="sub">Détail estimatif pour appels d'offres — saisie par chapitres et lignes, totaux automatiques</div></div>
+    <button class="btn sm" onclick="editBordereau()">+ Nouveau bordereau</button></div>
+  <div class="card"><table><thead><tr><th>N°</th><th>Objet</th><th>Client</th><th class="r">Total TTC</th><th></th></tr></thead><tbody>
+  ${list.length ? list.map((b) => `<tr><td class="mono">${b.numero || b.id}</td><td>${b.objet || ""}</td><td>${b.client || ""}</td><td class="r mono">${fmt(b.total_ttc)}</td>
+    <td class="r"><button class="btn sm" onclick="editBordereau(${b.id})">Éditer</button> <button class="btn sm ghost" onclick="downloadDoc('/api/bordereaux/${b.id}/excel','bordereau-${b.numero || b.id}.xlsx')">Excel</button> <button class="btn sm ghost" onclick="downloadDoc('/api/bordereaux/${b.id}/pdf','bordereau-${b.numero || b.id}.pdf')">PDF</button> <button class="btn sm danger" onclick="delBordereau(${b.id})">×</button></td></tr>`).join("") : `<tr><td colspan="5" class="muted">Aucun bordereau. Cliquez « + Nouveau bordereau ».</td></tr>`}
+  </tbody></table></div>`;
+}
+async function editBordereau(id) {
+  if (id) { const b = await api("/api/bordereaux/" + id); const c = Array.isArray(b.contenu) ? b.contenu : JSON.parse(b.contenu || "[]"); bordEdit = { id: b.id, numero: b.numero, marche: b.marche || "", maitre_ouvrage: b.maitre_ouvrage || "", objet: b.objet || "", client: b.client || "", client_ice: b.client_ice || "", chapitres: c.length ? c : bordNewModel().chapitres }; }
+  else bordEdit = bordNewModel();
+  renderBordEditor();
+}
+function renderBordEditor() {
+  const b = bordEdit;
+  V().innerHTML = `
+  <div class="bar"><div><h1>${b.id ? "Bordereau " + (b.numero || "") : "Nouveau bordereau"}</h1><div class="sub">Ajoute tes chapitres et tes lignes — les totaux se calculent en direct</div></div>
+    <div style="display:flex;gap:8px"><button class="btn ghost" onclick="show('bordereaux')">← Retour</button><button class="btn" onclick="saveBordereau()">💾 Enregistrer</button></div></div>
+  <div class="card" style="margin-bottom:14px"><div class="form" style="grid-template-columns:1fr 1fr 1fr">
+    <div class="field"><label>Marché n°</label><input data-h="marche" value="${bordEsc(b.marche)}" oninput="bordSync(this)"></div>
+    <div class="field"><label>Maître d'ouvrage</label><input data-h="maitre_ouvrage" value="${bordEsc(b.maitre_ouvrage)}" oninput="bordSync(this)"></div>
+    <div class="field"><label>Objet</label><input data-h="objet" value="${bordEsc(b.objet)}" oninput="bordSync(this)"></div>
+    <div class="field"><label>Client</label><input data-h="client" value="${bordEsc(b.client)}" oninput="bordSync(this)"></div>
+    <div class="field"><label>ICE client</label><input data-h="client_ice" value="${bordEsc(b.client_ice)}" oninput="bordSync(this)"></div>
+  </div></div>
+  ${b.chapitres.map((ch, ci) => bordChapterCard(ch, ci)).join("")}
+  <button class="btn ghost" onclick="bordAddChapter()" style="margin:4px 0 14px">➕ Ajouter un chapitre</button>
+  <div class="card" style="max-width:420px;margin-left:auto">
+    <div class="trow"><span>Total HT</span><b class="mono" id="bd-ht">0,00</b></div>
+    <div class="trow"><span>TVA 20 %</span><b class="mono" id="bd-tva">0,00</b></div>
+    <div class="trow big"><span>Total TTC</span><b class="mono" id="bd-ttc">0,00</b></div>
+  </div>`;
+  bordRecalc();
+}
+function bordChapterCard(ch, ci) {
+  return `<div class="card" style="margin-bottom:12px">
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+      <span class="pill">Chap. ${ci + 1}</span>
+      <input data-ci="${ci}" data-li="" data-f="titre" value="${bordEsc(ch.titre)}" oninput="bordSync(this)" placeholder="Titre du chapitre (ex : GROS ŒUVRE)" style="flex:1;font-weight:700">
+      <button class="btn sm danger" onclick="bordDelChapter(${ci})">Suppr. chapitre</button>
+    </div>
+    <table class="bordtab"><thead><tr><th style="width:58px">N°</th><th>Désignation</th><th style="width:52px">U</th><th style="width:88px">Quantité</th><th style="width:104px">P.U. HT</th><th style="width:110px" class="r">Total</th><th style="width:34px"></th></tr></thead><tbody>
+    ${ch.lignes.map((l, li) => `<tr>
+      <td><input data-ci="${ci}" data-li="${li}" data-f="num" value="${bordEsc(l.num)}" oninput="bordSync(this)"></td>
+      <td><input data-ci="${ci}" data-li="${li}" data-f="designation" value="${bordEsc(l.designation)}" oninput="bordSync(this)"></td>
+      <td><input data-ci="${ci}" data-li="${li}" data-f="unite" value="${bordEsc(l.unite)}" oninput="bordSync(this)"></td>
+      <td><input type="number" step="any" data-ci="${ci}" data-li="${li}" data-f="quantite" value="${bordEsc(l.quantite)}" oninput="bordSync(this)"></td>
+      <td><input type="number" step="any" data-ci="${ci}" data-li="${li}" data-f="pu" value="${bordEsc(l.pu)}" oninput="bordSync(this)"></td>
+      <td class="r mono" id="lt-${ci}-${li}">0,00</td>
+      <td><button class="btn sm danger" onclick="bordDelLine(${ci},${li})">×</button></td></tr>`).join("")}
+    </tbody></table>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+      <button class="btn sm" onclick="bordAddLine(${ci})">+ Ajouter une ligne</button>
+      <div class="muted">Sous-total : <b class="mono" id="st-${ci}">0,00</b> MAD</div>
+    </div>
+  </div>`;
+}
+function bordSync(inp) {
+  const d = inp.dataset;
+  if (d.h) { bordEdit[d.h] = inp.value; return; }
+  if (d.li !== undefined && d.li !== "") { bordEdit.chapitres[+d.ci].lignes[+d.li][d.f] = inp.value; if (d.f === "quantite" || d.f === "pu") bordRecalc(); return; }
+  if (d.ci !== undefined && d.ci !== "") bordEdit.chapitres[+d.ci][d.f] = inp.value;
+}
+function bordAddChapter() { bordEdit.chapitres.push({ titre: "", lignes: [{ num: "", designation: "", unite: "", quantite: "", pu: "" }] }); renderBordEditor(); }
+function bordDelChapter(ci) { if (confirm("Supprimer ce chapitre ?")) { bordEdit.chapitres.splice(ci, 1); if (!bordEdit.chapitres.length) bordEdit.chapitres = bordNewModel().chapitres; renderBordEditor(); } }
+function bordAddLine(ci) { bordEdit.chapitres[ci].lignes.push({ num: "", designation: "", unite: "", quantite: "", pu: "" }); renderBordEditor(); }
+function bordDelLine(ci, li) { bordEdit.chapitres[ci].lignes.splice(li, 1); if (!bordEdit.chapitres[ci].lignes.length) bordEdit.chapitres[ci].lignes.push({ num: "", designation: "", unite: "", quantite: "", pu: "" }); renderBordEditor(); }
+function bordRecalc() {
+  let ht = 0;
+  bordEdit.chapitres.forEach((ch, ci) => { let st = 0; ch.lignes.forEach((l, li) => { const t = (Number(l.quantite) || 0) * (Number(l.pu) || 0); st += t; const c = el("lt-" + ci + "-" + li); if (c) c.textContent = fmt(t); }); const sc = el("st-" + ci); if (sc) sc.textContent = fmt(st); ht += st; });
+  const tva = ht * 0.2; const e1 = el("bd-ht"), e2 = el("bd-tva"), e3 = el("bd-ttc");
+  if (e1) e1.textContent = fmt(ht); if (e2) e2.textContent = fmt(tva); if (e3) e3.textContent = fmt(ht + tva);
+}
+async function saveBordereau() {
+  const b = bordEdit;
+  const payload = { marche: b.marche, maitre_ouvrage: b.maitre_ouvrage, objet: b.objet, client: b.client, client_ice: b.client_ice, contenu: b.chapitres };
+  try {
+    const saved = b.id ? await api("/api/bordereaux/" + b.id, { method: "PUT", body: JSON.stringify(payload) }) : await api("/api/bordereaux", { method: "POST", body: JSON.stringify(payload) });
+    bordEdit.id = saved.id; bordEdit.numero = saved.numero;
+    alert("Bordereau " + (saved.numero || "") + " enregistré. Tu peux l'exporter en Excel ou PDF depuis la liste.");
+    renderBordEditor();
+  } catch (e) { alert(e.message); }
+}
+async function delBordereau(id) { if (confirm("Supprimer ce bordereau ?")) { await api("/api/bordereaux/" + id, { method: "DELETE" }); renderBordereaux(); } }
 
 /* ===================== Comptabilité / TVA ===================== */
 let comptaPeriod = null;

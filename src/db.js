@@ -314,6 +314,14 @@ CREATE TABLE IF NOT EXISTS activite (
   company_id int, created_at timestamptz DEFAULT now());
 CREATE INDEX IF NOT EXISTS activite_company_idx ON activite (company_id, created_at DESC);
 
+-- Bordereau des prix / détail estimatif (chapitres + lignes en JSON)
+CREATE TABLE IF NOT EXISTS bordereau (
+  id serial PRIMARY KEY,
+  numero text, marche text, maitre_ouvrage text, objet text, client text, client_ice text,
+  contenu jsonb NOT NULL DEFAULT '[]',
+  total_ht numeric(14,2) DEFAULT 0, tva numeric(14,2) DEFAULT 0, total_ttc numeric(14,2) DEFAULT 0,
+  company_id int REFERENCES company(id), created_at timestamptz DEFAULT now());
+
 -- Société : coordonnées et identité pour les documents (devis, factures…)
 ALTER TABLE company ADD COLUMN IF NOT EXISTS adresse text;
 ALTER TABLE company ADD COLUMN IF NOT EXISTS ville text;

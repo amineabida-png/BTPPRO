@@ -227,3 +227,9 @@ thead th[data-sortable]:hover{color:var(--asphalt)}
 
 /* ---- Badge d'alertes ---- */
 .badge{display:inline-block;background:var(--rose);color:#fff;font-size:10px;font-weight:700;border-radius:999px;padding:1px 7px;margin-left:4px;vertical-align:middle}
+
+/* ---- Bordereau (saisie) ---- */
+.bordtab input{width:100%;padding:5px 6px;border:1px solid var(--line);border-radius:6px;font-family:inherit;font-size:13px}
+.bordtab td{padding:3px 4px}
+.trow{display:flex;justify-content:space-between;align-items:center;padding:6px 2px;border-bottom:1px solid var(--line)}
+.trow.big{border-bottom:none;font-size:17px;background:var(--hazard);margin:6px -14px -14px;padding:12px 14px;border-radius:0 0 12px 12px}

@@ -1595,6 +1595,143 @@ app.get("/api/integrations/efacture", requireAuth, wrap(async (req, res) => {
   res.end(JSON.stringify(out, null, 2));
 }));
 
+// ══════════════ BORDEREAU — module de saisie (chapitres + lignes) ══════════════
+function bordTotaux(contenu) {
+  let ht = 0;
+  for (const ch of contenu || []) for (const l of (ch.lignes || [])) ht += (Number(l.quantite) || 0) * (Number(l.pu) || 0);
+  ht = +ht.toFixed(2); const tva = +(ht * 0.2).toFixed(2); return { ht, tva, ttc: +(ht + tva).toFixed(2) };
+}
+async function bordNumero(company) {
+  const y = new Date().getFullYear();
+  const n = Number((await pool.query("SELECT count(*)::int c FROM bordereau WHERE company_id=$1 AND EXTRACT(YEAR FROM created_at)=$2", [company, y])).rows[0].c) + 1;
+  return `BORD-${y}-${String(n).padStart(4, "0")}`;
+}
+app.get("/api/bordereaux", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  res.json((await pool.query("SELECT id,numero,marche,objet,client,total_ttc,created_at FROM bordereau WHERE company_id=$1 ORDER BY id DESC", [company])).rows);
+}));
+app.get("/api/bordereaux/:id", requireAuth, wrap(async (req, res) => {
+  const b = (await pool.query("SELECT * FROM bordereau WHERE id=$1", [req.params.id])).rows[0];
+  if (!b) return res.status(404).json({ error: "Introuvable" });
+  res.json(b);
+}));
+app.post("/api/bordereaux", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const { marche, maitre_ouvrage, objet, client, client_ice, contenu = [] } = req.body || {};
+  const t = bordTotaux(contenu);
+  const numero = req.body.numero || await bordNumero(company);
+  const b = (await pool.query(
+    `INSERT INTO bordereau (numero,marche,maitre_ouvrage,objet,client,client_ice,contenu,total_ht,tva,total_ttc,company_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+    [numero, marche || null, maitre_ouvrage || null, objet || null, client || null, client_ice || null, JSON.stringify(contenu), t.ht, t.tva, t.ttc, company])).rows[0];
+  res.status(201).json(b);
+}));
+app.put("/api/bordereaux/:id", requireAuth, wrap(async (req, res) => {
+  const { marche, maitre_ouvrage, objet, client, client_ice, contenu = [] } = req.body || {};
+  const t = bordTotaux(contenu);
+  const b = (await pool.query(
+    `UPDATE bordereau SET marche=$2,maitre_ouvrage=$3,objet=$4,client=$5,client_ice=$6,contenu=$7,total_ht=$8,tva=$9,total_ttc=$10 WHERE id=$1 RETURNING *`,
+    [req.params.id, marche || null, maitre_ouvrage || null, objet || null, client || null, client_ice || null, JSON.stringify(contenu), t.ht, t.tva, t.ttc])).rows[0];
+  if (!b) return res.status(404).json({ error: "Introuvable" });
+  res.json(b);
+}));
+app.delete("/api/bordereaux/:id", requireAuth, wrap(async (req, res) => { await pool.query("DELETE FROM bordereau WHERE id=$1", [req.params.id]); res.json({ ok: true }); }));
+
+app.get("/api/bordereaux/:id/excel", requireAuth, wrap(async (req, res) => {
+  const b = (await pool.query("SELECT * FROM bordereau WHERE id=$1", [req.params.id])).rows[0];
+  if (!b) return res.status(404).json({ error: "Introuvable" });
+  const co = await getCompany(b.company_id || (await cid(req)));
+  const contenu = Array.isArray(b.contenu) ? b.contenu : JSON.parse(b.contenu || "[]");
+  const wb = new ExcelJS.Workbook(); wb.creator = "BTPPro";
+  const ws = wb.addWorksheet("Bordereau des prix", { views: [{ state: "frozen", ySplit: 5, showGridLines: false }], pageSetup: { fitToWidth: 1, orientation: "portrait", margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } } });
+  ws.columns = [{ width: 10 }, { width: 58 }, { width: 8 }, { width: 12 }, { width: 16 }, { width: 18 }];
+  const thin = { style: "thin", color: { argb: "FFBFBFBF" } }; const border = { top: thin, left: thin, bottom: thin, right: thin };
+  ws.mergeCells("A1:F1"); const t = ws.getCell("A1"); t.value = co.raison_sociale || "Société"; t.font = { bold: true, size: 14 }; t.alignment = { horizontal: "center" };
+  ws.mergeCells("A2:F2"); const s = ws.getCell("A2"); s.value = "BORDEREAU DES PRIX — DÉTAIL ESTIMATIF" + (b.numero ? "  (" + b.numero + ")" : ""); s.font = { bold: true, size: 12, color: { argb: "FF1A1300" } }; s.alignment = { horizontal: "center" }; s.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF5B301" } };
+  ws.mergeCells("A3:F3"); ws.getCell("A3").value = `Marché n° : ${b.marche || "—"}     Maître d'ouvrage : ${b.maitre_ouvrage || "—"}     Objet : ${b.objet || "—"}`; ws.getRow(3).height = 18;
+  ws.getRow(4).height = 6;
+  const head = ["N° Prix", "Désignation des prestations", "U", "Quantité", "P.U. HT", "Prix total HT"];
+  const hr = ws.getRow(5); head.forEach((h, i) => { const c = hr.getCell(i + 1); c.value = h; c.font = { bold: true, color: { argb: "FFFFFFFF" } }; c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF15171C" } }; c.alignment = { horizontal: i === 1 ? "left" : "center", vertical: "middle", wrapText: true }; c.border = border; }); hr.height = 26;
+  let r = 6; const subRows = [];
+  const roman = (n) => ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV", "XVI", "XVII", "XVIII", "XIX", "XX"][n - 1] || String(n);
+  contenu.forEach((ch, ci) => {
+    ws.mergeCells(`A${r}:F${r}`); const sc = ws.getCell(`A${r}`); sc.value = `CHAPITRE ${roman(ci + 1)} — ${ch.titre || ""}`; sc.font = { bold: true }; sc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEDEFF2" } }; for (let k = 1; k <= 6; k++) ws.getRow(r).getCell(k).border = border; r++;
+    const cStart = r;
+    for (const l of (ch.lignes || [])) {
+      const row = ws.getRow(r);
+      row.getCell(1).value = l.num || ""; row.getCell(1).alignment = { horizontal: "center" };
+      row.getCell(2).value = l.designation || ""; row.getCell(2).alignment = { wrapText: true };
+      row.getCell(3).value = l.unite || ""; row.getCell(3).alignment = { horizontal: "center" };
+      row.getCell(4).value = l.quantite != null && l.quantite !== "" ? Number(l.quantite) : null; row.getCell(4).numFmt = "#,##0.00"; row.getCell(4).alignment = { horizontal: "center" };
+      row.getCell(5).value = l.pu != null && l.pu !== "" ? Number(l.pu) : null; row.getCell(5).numFmt = "#,##0.00";
+      row.getCell(6).value = { formula: `IF(OR(D${r}="",E${r}=""),"",D${r}*E${r})` }; row.getCell(6).numFmt = "#,##0.00";
+      for (let c = 1; c <= 6; c++) row.getCell(c).border = border; r++;
+    }
+    if (r === cStart) { for (let c = 1; c <= 6; c++) ws.getRow(r).getCell(c).border = border; r++; }
+    ws.mergeCells(`A${r}:E${r}`); const sl = ws.getCell(`A${r}`); sl.value = `Sous-total Chapitre ${roman(ci + 1)}`; sl.alignment = { horizontal: "right" }; sl.font = { bold: true, italic: true }; sl.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF7F3E3" } };
+    const sv = ws.getCell(`F${r}`); sv.value = { formula: `SUM(F${cStart}:F${r - 1})` }; sv.numFmt = "#,##0.00"; sv.font = { bold: true }; sv.fill = sl.fill; for (let c = 1; c <= 6; c++) ws.getRow(r).getCell(c).border = border; subRows.push(r); r++;
+  });
+  r++;
+  const totalRow = (label, formula, strong) => { ws.mergeCells(`A${r}:E${r}`); const l = ws.getCell(`A${r}`); l.value = label; l.alignment = { horizontal: "right" }; l.font = { bold: !!strong, size: strong ? 12 : 11 }; const v = ws.getCell(`F${r}`); v.value = { formula }; v.numFmt = "#,##0.00"; v.font = { bold: !!strong, size: strong ? 12 : 11 }; if (strong) { l.fill = v.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF5B301" } }; } for (let c = 1; c <= 6; c++) ws.getRow(r).getCell(c).border = border; r++; };
+  const htRow = r; totalRow("TOTAL GÉNÉRAL HORS T.V.A.", subRows.length ? subRows.map((rr) => `F${rr}`).join("+") : "0");
+  const tvaRow = r; totalRow("T.V.A. 20 %", `F${htRow}*0.2`);
+  totalRow("TOTAL GÉNÉRAL T.T.C.", `F${htRow}+F${tvaRow}`, true);
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="bordereau-${b.numero || b.id}.xlsx"`);
+  await wb.xlsx.write(res); res.end();
+}));
+
+app.get("/api/bordereaux/:id/pdf", requireAuth, wrap(async (req, res) => {
+  const b = (await pool.query("SELECT * FROM bordereau WHERE id=$1", [req.params.id])).rows[0];
+  if (!b) return res.status(404).json({ error: "Introuvable" });
+  const co = await getCompany(b.company_id || (await cid(req)));
+  const contenu = Array.isArray(b.contenu) ? b.contenu : JSON.parse(b.contenu || "[]");
+  const roman = (n) => ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV", "XVI", "XVII", "XVIII", "XIX", "XX"][n - 1] || String(n);
+  const doc = newDoc(res, `bordereau-${b.numero || b.id}.pdf`);
+  let y = docLetterhead(doc, co, "BORDEREAU DES PRIX", b.numero || b.id, new Date(b.created_at).toLocaleDateString("fr-FR"));
+  y = clientBlock(doc, y + 6, b.client || "—", b.objet ? "Objet : " + b.objet : null, b.client_ice, "MAÎTRE D'OUVRAGE");
+  if (b.marche) { doc.font("Helvetica").fontSize(9).fillColor("#5A6473").text("Marché n° : " + b.marche, 40, y); y += 14; }
+  const cols = [[40, 34], [74, 250], [324, 34], [358, 52], [410, 70], [480, 75]];
+  const header = () => {
+    doc.rect(40, y, 515, 18).fill("#15171C");
+    doc.font("Helvetica-Bold").fontSize(8).fillColor("#FFFFFF");
+    ["N°", "Désignation", "U", "Qté", "P.U. HT", "Total HT"].forEach((h, i) => doc.text(h, cols[i][0] + 2, y + 5, { width: cols[i][1] - 4, align: i >= 3 ? "right" : "left" }));
+    y += 18;
+  };
+  header();
+  let grand = 0;
+  doc.fillColor("#15171C");
+  contenu.forEach((ch, ci) => {
+    if (y > 720) { doc.addPage(); y = 50; header(); }
+    doc.rect(40, y, 515, 16).fill("#EDEFF2"); doc.font("Helvetica-Bold").fontSize(8.5).fillColor("#15171C").text(`CHAPITRE ${roman(ci + 1)} — ${ch.titre || ""}`, 44, y + 4, { width: 505 }); y += 16;
+    let sous = 0;
+    for (const l of (ch.lignes || [])) {
+      const tot = (Number(l.quantite) || 0) * (Number(l.pu) || 0); sous += tot;
+      const dh = Math.max(14, Math.ceil(doc.heightOfString(l.designation || "", { width: cols[1][1] - 4, fontSize: 8 }) ) + 4);
+      if (y + dh > 760) { doc.addPage(); y = 50; header(); }
+      doc.font("Helvetica").fontSize(8).fillColor("#15171C");
+      doc.text(l.num || "", cols[0][0] + 2, y + 3, { width: cols[0][1] - 4 });
+      doc.text(l.designation || "", cols[1][0] + 2, y + 3, { width: cols[1][1] - 4 });
+      doc.text(l.unite || "", cols[2][0] + 2, y + 3, { width: cols[2][1] - 4, align: "center" });
+      doc.text(l.quantite != null ? String(l.quantite) : "", cols[3][0] + 2, y + 3, { width: cols[3][1] - 4, align: "right" });
+      doc.text(l.pu != null ? moneyFR(Number(l.pu)).replace(" MAD", "") : "", cols[4][0] + 2, y + 3, { width: cols[4][1] - 4, align: "right" });
+      doc.text(tot ? moneyFR(tot).replace(" MAD", "") : "", cols[5][0] + 2, y + 3, { width: cols[5][1] - 4, align: "right" });
+      doc.moveTo(40, y + dh).lineTo(555, y + dh).strokeColor("#E5E8EC").stroke();
+      y += dh;
+    }
+    grand += sous;
+    doc.font("Helvetica-Bold").fontSize(8).fillColor("#15171C").text(`Sous-total Chapitre ${roman(ci + 1)} : ${moneyFR(sous)}`, 40, y + 3, { width: 515, align: "right" }); y += 18;
+  });
+  const tva = grand * 0.2;
+  y += 6;
+  const tline = (label, val, strong) => { if (strong) { doc.rect(330, y - 2, 225, 18).fill("#F5B301"); doc.fillColor("#15171C"); } doc.font(strong ? "Helvetica-Bold" : "Helvetica").fontSize(strong ? 10 : 9).fillColor("#15171C").text(label + " : " + moneyFR(val), 335, y + 2, { width: 215, align: "right" }); y += 18; };
+  tline("TOTAL HORS T.V.A.", grand);
+  tline("T.V.A. 20 %", tva);
+  tline("TOTAL T.T.C.", grand + tva, true);
+  docFooter(doc, co, "Bordereau des prix / détail estimatif.");
+  doc.end();
+}));
+
 // ══════════════ BORDEREAU DES PRIX (modèle vierge, Excel) ══════════════
 app.get("/api/bordereau/template", requireAuth, wrap(async (req, res) => {
   const co = await getCompany(await cid(req));
