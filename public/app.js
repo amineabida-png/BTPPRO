@@ -1403,7 +1403,7 @@ async function renderSuperAdmin() {
   const list = await api("/api/admin/overview");
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString("fr-FR") : "—";
   V().innerHTML = `<div class="bar"><div><h1>👑 Super Admin</h1><div class="sub">Gestion des clients, abonnements et utilisateurs</div></div>
-    <button class="btn sm" onclick="show('onboarding')">+ Nouveau client</button></div>
+    <button class="btn sm" onclick="show('onboarding')">+ Nouvel abonné</button></div>
   <div class="grid kpis" style="margin-bottom:16px">
     <div class="card kpi"><div class="lbl">30 jours</div><div class="val mono">99 <small>DH</small></div></div>
     <div class="card kpi"><div class="lbl">1 an</div><div class="val mono">990 <small>DH</small></div></div>
@@ -1618,29 +1618,29 @@ async function renderActivite() {
 
 /* ===================== Onboarding (nouveau client) ===================== */
 function renderOnboarding() {
-  V().innerHTML = `<div class="bar"><div><h1>Nouveau client</h1><div class="sub">Créer une société cliente et son compte administrateur (réservé au super-administrateur)</div></div></div>
+  V().innerHTML = `<div class="bar"><div><h1>Nouvel abonné</h1><div class="sub">Créer une société abonnée à BTP360 et son compte administrateur (réservé au super-administrateur)</div></div></div>
   <div class="card" style="max-width:700px">
-    <div class="colhead">Société cliente</div>
-    <div class="form" style="grid-template-columns:1fr 1fr">
-      <div class="field"><label>Raison sociale *</label><input id="ob-rs"></div>
-      <div class="field"><label>ICE</label><input id="ob-ice"></div>
-      <div class="field"><label>Ville</label><input id="ob-ville"></div>
-      <div class="field"><label>Téléphone</label><input id="ob-tel"></div>
+    <div class="colhead">Société abonnée</div>
+    <div class="form" style="grid-template-columns:1fr 1fr" autocomplete="off">
+      <div class="field"><label>Raison sociale *</label><input id="ob-rs" autocomplete="off"></div>
+      <div class="field"><label>ICE</label><input id="ob-ice" autocomplete="off"></div>
+      <div class="field"><label>Ville</label><input id="ob-ville" autocomplete="off"></div>
+      <div class="field"><label>Téléphone</label><input id="ob-tel" autocomplete="off"></div>
     </div>
     <div class="colhead" style="margin-top:16px">Compte administrateur (Directeur)</div>
     <div class="form" style="grid-template-columns:1fr 1fr">
-      <div class="field"><label>Nom complet</label><input id="ob-name"></div>
-      <div class="field"><label>Email *</label><input id="ob-email"></div>
-      <div class="field" style="grid-column:1/-1"><label>Mot de passe *</label><input id="ob-pwd" type="password"></div>
+      <div class="field"><label>Nom complet</label><input id="ob-name" autocomplete="off"></div>
+      <div class="field"><label>Email de l'abonné *</label><input id="ob-email" type="text" inputmode="email" autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" placeholder="email du nouveau client"></div>
+      <div class="field" style="grid-column:1/-1"><label>Mot de passe *</label><input id="ob-pwd" type="password" autocomplete="new-password" readonly onfocus="this.removeAttribute('readonly')" placeholder="mot de passe pour ce client"></div>
     </div>
-    <div class="mactions"><button class="btn" onclick="saveOnboarding()">Créer le client</button></div>
+    <div class="mactions"><button class="btn" onclick="saveOnboarding()">Créer l'abonné</button></div>
     <div id="ob-msg" style="margin-top:10px;font-size:13px"></div>
   </div>`;
 }
 async function saveOnboarding() {
-  const body = { company: { raison_sociale: el("ob-rs").value, ice: el("ob-ice").value, ville: el("ob-ville").value, telephone: el("ob-tel").value }, user: { full_name: el("ob-name").value, email: el("ob-email").value, password: el("ob-pwd").value } };
+  const body = { company: { raison_sociale: el("ob-rs").value, ice: el("ob-ice").value, ville: el("ob-ville").value, telephone: el("ob-tel").value }, user: { full_name: el("ob-name").value, email: el("ob-email").value.trim(), password: el("ob-pwd").value } };
   if (!body.company.raison_sociale || !body.user.email || !body.user.password) { el("ob-msg").innerHTML = '<span class="err">Raison sociale, email et mot de passe sont requis.</span>'; return; }
-  try { const r = await api("/api/onboarding", { method: "POST", body: JSON.stringify(body) }); el("ob-msg").innerHTML = `✅ Client « ${r.company.raison_sociale} » créé. L'administrateur se connecte avec <b>${r.user.email}</b> et verra uniquement sa société.`; }
+  try { const r = await api("/api/onboarding", { method: "POST", body: JSON.stringify(body) }); el("ob-msg").innerHTML = `✅ Abonné « ${r.company.raison_sociale} » créé. L'administrateur se connecte avec <b>${r.user.email}</b> et verra uniquement sa société.`; }
   catch (e) { el("ob-msg").innerHTML = '<span class="err">Erreur : ' + e.message + "</span>"; }
 }
 
