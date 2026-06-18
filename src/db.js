@@ -358,7 +358,25 @@ async function seedIfEmpty(table, fn) {
 async function initDb() {
   await pool.query(SCHEMA);
 
-  await seedIfEmpty("company", () =>
+  const DEMO = process.env.SEED_DEMO === "1"; // données de démo uniquement si explicitement demandé
+
+  // Nettoyage unique des données de démonstration (conserve sociétés + comptes utilisateurs)
+  await pool.query("CREATE TABLE IF NOT EXISTS app_meta (key text PRIMARY KEY, value text)");
+  const dejaPurge = (await pool.query("SELECT 1 FROM app_meta WHERE key='demo_purge_v1'")).rowCount;
+  if (!dejaPurge && !DEMO) {
+    const BUSINESS = ["employee","chantier","devis","facture","article","fournisseur","sous_traitant",
+      "payroll_run","ouvrage","bordereau","activite","paiement","pointage","tache","materiel",
+      "rapport_chantier","document","incident","controle_securite","epi","evaluation","conge","contrat",
+      "demande_achat","bon_commande","affectation","chantier_expense","mouvement_stock"];
+    const exist = (await pool.query(
+      "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name = ANY($1)", [BUSINESS]
+    )).rows.map((r) => r.table_name);
+    if (exist.length) await pool.query(`TRUNCATE ${exist.join(",")} RESTART IDENTITY CASCADE`);
+    await pool.query("INSERT INTO app_meta (key,value) VALUES ('demo_purge_v1', now()::text) ON CONFLICT (key) DO NOTHING");
+    console.log("🧹 Données de démonstration purgées (sociétés et comptes conservés).");
+  }
+
+  if (DEMO) await seedIfEmpty("company", () =>
     pool.query(`INSERT INTO company (raison_sociale, ice, adresse, ville, telephone, email, rc, if_fiscal, patente, cnss, rib, tva_taux)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,20)`,
       ["Atlas Constructions SARL", "001234567000089", "12, Zone Industrielle Sidi Bernoussi", "Casablanca",
@@ -374,7 +392,7 @@ async function initDb() {
     console.log(`👤 Admin : ${email} / ${pwd}`);
   });
 
-  await seedIfEmpty("employee", async () => {
+  if (DEMO) await seedIfEmpty("employee", async () => {
     for (const r of [
       ["BTP-0101", "Hamid Ouazzani", "Manœuvre", 3500, 6, 1],
       ["BTP-0142", "Karim El Idrissi", "Ouvrier qualifié", 5000, 30, 2],
@@ -384,7 +402,7 @@ async function initDb() {
       "INSERT INTO employee (matricule,nom,poste,salaire_base,mois_anciennete,personnes_charge) VALUES ($1,$2,$3,$4,$5,$6)", r);
   });
 
-  await seedIfEmpty("contrat", async () => {
+  if (DEMO) await seedIfEmpty("contrat", async () => {
     // Organigramme : chef de chantier → contremaître → ouvrier/manœuvre
     const emps = (await pool.query("SELECT id,matricule,poste,salaire_base FROM employee ORDER BY id")).rows;
     const by = (m) => emps.find((e) => e.matricule === m);
@@ -405,7 +423,7 @@ async function initDb() {
       "INSERT INTO evaluation (employee_id,note,evaluateur,commentaire) VALUES ($1,4,'Direction','Bon encadrement des équipes')", [contre.id]);
   });
 
-  await seedIfEmpty("chantier", async () => {
+  if (DEMO) await seedIfEmpty("chantier", async () => {
     for (const r of [
       ["CH-001", "Résidence Al Manar", "Groupe Addoha", "Casablanca", "en_cours", 4500000],
       ["CH-002", "Pont Oued Bouregreg", "Ministère Équipement", "Rabat", "en_cours", 12000000],
@@ -414,7 +432,7 @@ async function initDb() {
       "INSERT INTO chantier (code,nom,client,ville,statut,budget_prevu) VALUES ($1,$2,$3,$4,$5,$6)", r);
   });
 
-  await seedIfEmpty("fournisseur", async () => {
+  if (DEMO) await seedIfEmpty("fournisseur", async () => {
     for (const r of [
       ["LafargeHolcim Maroc", "001100220033001", "Service commercial", "0522000000", "contact@lafarge.ma"],
       ["Sonasid", "001100220033002", "Ventes acier", "0523000000", "contact@sonasid.ma"],
@@ -422,7 +440,7 @@ async function initDb() {
       "INSERT INTO fournisseur (raison_sociale,ice,contact,telephone,email) VALUES ($1,$2,$3,$4,$5)", r);
   });
 
-  await seedIfEmpty("article", async () => {
+  if (DEMO) await seedIfEmpty("article", async () => {
     for (const r of [
       ["CIM-CPJ45", "Ciment CPJ 45 (sac 50kg)", "sac", 320, 100, 78],
       ["ACI-FE500", "Acier à béton Fe500 (T)", "t", 12, 5, 9500],
@@ -433,7 +451,7 @@ async function initDb() {
   // Initialiser le CMUP des articles neufs (au prix d'achat de référence)
   await pool.query("UPDATE article SET cmup = prix_unitaire WHERE cmup IS NULL OR cmup = 0");
 
-  await seedIfEmpty("ouvrage", async () => {
+  if (DEMO) await seedIfEmpty("ouvrage", async () => {
     // Ouvrage + sous-détail de prix (déboursé sec = somme des composants)
     const ouvrages = [
       { code: "BET-001", designation: "Béton dosé 350 kg/m³ pour fondations", unite: "m3", composants: [
@@ -463,7 +481,7 @@ async function initDb() {
     }
   });
 
-  await seedIfEmpty("epi", async () => {
+  if (DEMO) await seedIfEmpty("epi", async () => {
     const emps = (await pool.query("SELECT id FROM employee ORDER BY id")).rows;
     for (const e of emps) {
       await pool.query("INSERT INTO epi (employee_id,designation,type) VALUES ($1,'Casque de chantier','tete')", [e.id]);
@@ -474,7 +492,7 @@ async function initDb() {
       "INSERT INTO controle_securite (chantier_id,type,conforme,observations,controleur) VALUES ($1,'Inspection mensuelle',true,'Port des EPI conforme','HSE')", [ch.id]);
   });
 
-  await seedIfEmpty("document", async () => {
+  if (DEMO) await seedIfEmpty("document", async () => {
     const ch = (await pool.query("SELECT id FROM chantier ORDER BY id LIMIT 1")).rows[0];
     const doc = (await pool.query(
       "INSERT INTO document (nom,type,categorie,chantier_id,url,version) VALUES ('Plan de coffrage R+2','plan','technique',$1,'/docs/plan-r2-v1.pdf',1) RETURNING id",
@@ -482,7 +500,7 @@ async function initDb() {
     await pool.query("INSERT INTO document_version (document_id,version,url,auteur,note) VALUES ($1,1,'/docs/plan-r2-v1.pdf','BE','Version initiale')", [doc.id]);
   });
 
-  await seedIfEmpty("sous_traitant", async () => {
+  if (DEMO) await seedIfEmpty("sous_traitant", async () => {
     const ch = (await pool.query("SELECT id FROM chantier ORDER BY id LIMIT 1")).rows[0];
     const sts = [
       ["Électricité Atlas SARL", "Électricité", "M. Alaoui", "0661000001"],
@@ -497,17 +515,19 @@ async function initDb() {
     }
   });
 
-  console.log("✅ Base initialisée (tous modules).");
+  console.log("✅ Base initialisée.");
 
-  // Multi-société : 2e société de démonstration + rattachement des données existantes
-  const c2 = await pool.query("SELECT count(*)::int AS n FROM company");
-  if (c2.rows[0].n < 2) {
-    await pool.query("INSERT INTO company (raison_sociale, ice) VALUES ($1,$2)", ["Détroit BTP SARL", "002345678000077"]);
-  }
-  const firstCompany = (await pool.query("SELECT id FROM company ORDER BY id LIMIT 1")).rows[0].id;
-  for (const t of ["employee","chantier","devis","facture","article","fournisseur","sous_traitant",
-    "payroll_run","conge","incident","controle_securite","document","demande_achat","bon_commande","ouvrage","epi","evaluation"]) {
-    await pool.query(`UPDATE ${t} SET company_id=$1 WHERE company_id IS NULL`, [firstCompany]);
+  // Multi-société : 2e société de démonstration + rattachement des données existantes (mode démo uniquement)
+  if (DEMO) {
+    const c2 = await pool.query("SELECT count(*)::int AS n FROM company");
+    if (c2.rows[0].n < 2) {
+      await pool.query("INSERT INTO company (raison_sociale, ice) VALUES ($1,$2)", ["Détroit BTP SARL", "002345678000077"]);
+    }
+    const firstCompany = (await pool.query("SELECT id FROM company ORDER BY id LIMIT 1")).rows[0].id;
+    for (const t of ["employee","chantier","devis","facture","article","fournisseur","sous_traitant",
+      "payroll_run","conge","incident","controle_securite","document","demande_achat","bon_commande","ouvrage","epi","evaluation"]) {
+      await pool.query(`UPDATE ${t} SET company_id=$1 WHERE company_id IS NULL`, [firstCompany]);
+    }
   }
 }
 
