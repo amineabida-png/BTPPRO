@@ -41,6 +41,7 @@ function domainOf(p) {
   if (p.startsWith("/api/alertes")) return null;
   if (p.startsWith("/api/compta")) return "rentabilite";
   if (p.startsWith("/api/bordereau")) return "devis";
+  if (p.startsWith("/api/clients")) return "tiers";
   if (p.startsWith("/api/activite") || p.startsWith("/api/onboarding")) return "admin";
   if (p.startsWith("/api/admin")) return "admin";
   if (p.startsWith("/api/articles") || p.startsWith("/api/stock")) return "stock";
@@ -468,6 +469,7 @@ const RESOURCES = {
   "demandes-achat": ["demande_achat", ["objet","chantier_id","statut"]],
   "bons-commande":  ["bon_commande", ["numero","fournisseur_id","montant","statut","date_commande"]],
   fournisseurs:   ["fournisseur", ["raison_sociale","ice","contact","telephone","email","conditions_paiement","delai_livraison"]],
+  clients:        ["client", ["raison_sociale","ice","contact","telephone","email","adresse","ville"]],
   "sous-traitants": ["sous_traitant", ["raison_sociale","specialite","contact","telephone"]],
   "situations-st":  ["soustraitant_situation", ["sous_traitant_id","chantier_id","montant","statut","date_situation"]],
   conges:         ["conge", ["employee_id","type","date_debut","date_fin","jours","statut","motif"]],
@@ -478,7 +480,7 @@ const RESOURCES = {
   paiements:      ["paiement", ["sens","facture_id","tiers","montant","date_paiement","mode","reference"]],
   materiel:       ["materiel", ["code","designation","type","etat","valeur_acquisition","date_acquisition","chantier_id"]],
 };
-const SCOPED_ROUTES = new Set(["chantiers", "factures", "incidents", "documents", "controles", "epi", "conges", "demandes-achat", "fournisseurs", "sous-traitants", "articles", "pointages", "taches", "paiements", "materiel"]);
+const SCOPED_ROUTES = new Set(["chantiers", "clients", "factures", "incidents", "documents", "controles", "epi", "conges", "demandes-achat", "fournisseurs", "sous-traitants", "articles", "pointages", "taches", "paiements", "materiel"]);
 for (const [route, [table, cols]] of Object.entries(RESOURCES)) {
   const c = makeCrud(table, cols, { company: SCOPED_ROUTES.has(route) });
   app.get(`/api/${route}`, requireAuth, wrap(c.list));

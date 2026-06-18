@@ -109,6 +109,10 @@ CREATE TABLE IF NOT EXISTS bon_commande (
 CREATE TABLE IF NOT EXISTS fournisseur (
   id serial PRIMARY KEY, raison_sociale text NOT NULL, ice text, contact text,
   telephone text, email text);
+CREATE TABLE IF NOT EXISTS client (
+  id serial PRIMARY KEY, raison_sociale text NOT NULL, ice text, contact text,
+  telephone text, email text, adresse text, ville text,
+  company_id int REFERENCES company(id), created_at timestamptz DEFAULT now());
 
 -- Sous-traitants
 CREATE TABLE IF NOT EXISTS sous_traitant (
@@ -367,7 +371,7 @@ async function initDb() {
     const BUSINESS = ["employee","chantier","devis","facture","article","fournisseur","sous_traitant",
       "payroll_run","ouvrage","bordereau","activite","paiement","pointage","tache","materiel",
       "rapport_chantier","document","incident","controle_securite","epi","evaluation","conge","contrat",
-      "demande_achat","bon_commande","affectation","chantier_expense","mouvement_stock"];
+      "demande_achat","bon_commande","affectation","chantier_expense","mouvement_stock","client"];
     const exist = (await pool.query(
       "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name = ANY($1)", [BUSINESS]
     )).rows.map((r) => r.table_name);

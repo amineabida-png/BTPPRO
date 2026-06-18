@@ -128,7 +128,7 @@ async function disable2FA() {
 const VIEW_DOMAIN = {
   dash: "dashboard", rentabilite: "rentabilite", emps: "rh", organigramme: "rh", paie: "paie", conges: "conges", runs: "paie",
   chantiers: "chantiers", incidents: "securite", documents: "ged", ouvrages: "devis", devis: "devis", factures: "facturation",
-  articles: "stock", "demandes-achat": "achats", "bons-commande": "achats", fournisseurs: "tiers", "sous-traitants": "tiers",
+  articles: "stock", "demandes-achat": "achats", "bons-commande": "achats", fournisseurs: "tiers", clients: "tiers", "sous-traitants": "tiers",
   integrations: null, users: "admin", societe: "admin",
   planning: "chantiers", pointage: "chantiers", tresorerie: "facturation",
   materiel: "chantiers", rapports: "chantiers", alertes: null,
@@ -155,7 +155,7 @@ const ROUTES = {
   organigramme: renderOrganigramme, paie: renderPaie, conges: renderConges, runs: renderRuns,
   ouvrages: renderOuvrages, devis: renderDevis, factures: renderFactures, articles: renderStock,
   "bons-commande": renderCommandes, chantiers: renderChantiers, incidents: renderSecurite,
-  documents: renderGED, fournisseurs: renderFournisseurs, "sous-traitants": renderSousTraitants,
+  documents: renderGED, fournisseurs: renderFournisseurs, clients: renderClients, "sous-traitants": renderSousTraitants,
   integrations: renderIntegrations, societe: renderSociete,
   planning: renderPlanning, pointage: renderPointage, tresorerie: renderTresorerie,
   materiel: renderMateriel, rapports: renderRapports, alertes: renderAlertes,
@@ -959,6 +959,26 @@ async function doSign(sigId, docId) { await api(`/api/signatures/${sigId}/sign`,
 
 /* ===================== Fournisseurs ===================== */
 const stars = (n) => n == null ? "—" : "★".repeat(Math.round(n)) + "☆".repeat(5 - Math.round(n)) + " " + n;
+/* ===================== Clients ===================== */
+async function renderClients() {
+  const list = await api("/api/clients"); caches.clients = list;
+  V().innerHTML = `<div class="bar"><div><h1>Clients</h1><div class="sub">Répertoire des clients (maîtres d'ouvrage, particuliers, entreprises).</div></div>
+    <button class="btn sm" onclick="addClient()">+ Client</button></div>
+    <div class="card"><table><thead><tr><th>Raison sociale</th><th>ICE</th><th>Contact</th><th>Tél</th><th>Ville</th><th></th></tr></thead><tbody>
+    ${list.map((c) => `<tr><td>${c.raison_sociale}</td><td class="mono">${c.ice || ""}</td><td>${c.contact || ""}</td><td>${c.telephone || ""}</td><td>${c.ville || ""}</td><td class="r"><button class="btn sm ghost" onclick="editClient(${c.id})">✏️</button> <button class="btn sm danger" onclick="delGen('clients',${c.id},renderClients)">×</button></td></tr>`).join("") || `<tr><td colspan="6" class="muted">Aucun client. Cliquez sur « + Client » pour en ajouter un.</td></tr>`}
+    </tbody></table></div>`;
+}
+async function addClient() {
+  const d = await modalForm("Nouveau client", [{ key: "raison_sociale", label: "Raison sociale / Nom" }, { key: "ice", label: "ICE" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }, { key: "email", label: "Email" }, { key: "adresse", label: "Adresse" }, { key: "ville", label: "Ville" }]);
+  if (!d) return;
+  try { await api("/api/clients", { method: "POST", body: JSON.stringify(d) }); renderClients(); } catch (e) { alert(e.message); }
+}
+function editClient(id) {
+  const o = findCached("clients", id);
+  if (o) editEntity("/api/clients", [{ key: "raison_sociale", label: "Raison sociale / Nom" }, { key: "ice", label: "ICE" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }, { key: "email", label: "Email" }, { key: "adresse", label: "Adresse" }, { key: "ville", label: "Ville" }], o, () => renderClients());
+}
+
+/* ===================== Fournisseurs ===================== */
 async function renderFournisseurs() {
   const list = await api("/api/fournisseurs"); caches.fournisseurs = list;
   V().innerHTML = `<div class="bar"><div><h1>Fournisseurs</h1><div class="sub">Conditions, historique des commandes et évaluations.</div></div>
