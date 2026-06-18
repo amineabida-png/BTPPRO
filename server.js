@@ -42,6 +42,7 @@ function domainOf(p) {
   if (p.startsWith("/api/compta")) return "rentabilite";
   if (p.startsWith("/api/bordereau")) return "devis";
   if (p.startsWith("/api/activite") || p.startsWith("/api/onboarding")) return "admin";
+  if (p.startsWith("/api/admin")) return "admin";
   if (p.startsWith("/api/articles") || p.startsWith("/api/stock")) return "stock";
   if (p.startsWith("/api/commandes") || p.startsWith("/api/demandes-achat") || p.startsWith("/api/bons-commande")) return "achats";
   if (p.startsWith("/api/fournisseur") || p.startsWith("/api/sous-traitants") || p.startsWith("/api/soustraitants") || p.startsWith("/api/st-")) return "tiers";
@@ -49,7 +50,7 @@ function domainOf(p) {
   if (p.startsWith("/api/dashboard")) return "dashboard";
   return null;
 }
-app.use("/api", (req, res, next) => {
+app.use("/api", async (req, res, next) => {
   const full = req.baseUrl + req.path; // req.path est relatif au montage "/api"
   if (PUBLIC.has(full)) return next();
   const h = req.headers.authorization || "";
@@ -59,6 +60,11 @@ app.use("/api", (req, res, next) => {
   req.companyId = Number(req.headers["x-company-id"]) || null; // société active (multi-société)
   const dom = domainOf(full);
   if (!roleHasDomain(req.user.role, dom)) return res.status(403).json({ error: "Accès refusé pour votre rôle (" + req.user.role + ")" });
+  // Abonnement : blocage des sociétés clientes expirées/suspendues (le super-admin n'est jamais bloqué)
+  if (req.user.company_id && full !== "/api/me" && !full.startsWith("/api/auth")) {
+    try { if (!(await companyActive(req.user.company_id))) return res.status(402).json({ error: "Abonnement expiré ou suspendu. Contactez votre fournisseur pour le réactiver." }); }
+    catch { /* en cas d'erreur DB, ne pas bloquer */ }
+  }
   // Journal d'activité : trace des opérations modifiantes (après réponse)
   if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method) && !full.startsWith("/api/export") && !full.startsWith("/api/auth")) {
     const email = req.user.email, companyId = Number(req.headers["x-company-id"]) || req.user.company_id || null;
@@ -81,6 +87,19 @@ async function defaultCompany() {
 }
 const cid = async (req) => (req.user && req.user.company_id) || req.companyId || (await defaultCompany());
 
+// ── Abonnement (SaaS) ──
+const PLAN_DUREE = { "30j": 30, "1an": 365, "avie": null };
+const subActive = (co) => co && co.actif !== false && (!co.abonnement_fin || new Date(co.abonnement_fin) > new Date());
+const subCache = new Map();
+async function companyActive(id) {
+  const c = subCache.get(id); const now = Date.now();
+  if (c && c.exp > now) return c.ok;
+  const co = (await pool.query("SELECT actif, abonnement_fin FROM company WHERE id=$1", [id])).rows[0];
+  const ok = subActive(co);
+  subCache.set(id, { ok, exp: now + 15000 });
+  return ok;
+}
+
 // ── Santé / Auth ──
 app.get("/api/health", (_req, res) => res.json({ ok: true, annee: SETTINGS.annee }));
 app.post("/api/auth/login", wrap(async (req, res) => {
@@ -96,7 +115,13 @@ app.post("/api/auth/login", wrap(async (req, res) => {
     if (!authenticator.check(String(code), user.totp_secret || ""))
       return res.status(401).json({ error: "Code 2FA incorrect" });
   }
-  res.json({ token: sign(user), user: { id: user.id, email: user.email, name: user.full_name, role: user.role, company_id: user.company_id || null, totp_enabled: user.totp_enabled } });
+  let subscription = null, blocked = false;
+  if (user.company_id) {
+    const co = (await pool.query("SELECT plan, abonnement_fin, actif FROM company WHERE id=$1", [user.company_id])).rows[0];
+    subscription = co ? { plan: co.plan, fin: co.abonnement_fin, actif: co.actif } : null;
+    blocked = !subActive(co);
+  }
+  res.json({ token: sign(user), user: { id: user.id, email: user.email, name: user.full_name, role: user.role, company_id: user.company_id || null, totp_enabled: user.totp_enabled }, subscription, blocked });
 }));
 app.get("/api/me", requireAuth, (req, res) =>
   res.json({ user: req.user, permissions: domainsForRole(req.user.role), roles: ROLES }));
@@ -1515,9 +1540,9 @@ app.post("/api/onboarding", requireAuth, wrap(async (req, res) => {
   try {
     await conn.query("BEGIN");
     const co = (await conn.query(
-      `INSERT INTO company (raison_sociale,ice,adresse,ville,telephone,email,rc,if_fiscal,patente,cnss,rib)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-      [company.raison_sociale, company.ice || null, company.adresse || null, company.ville || null, company.telephone || null, company.email || null, company.rc || null, company.if_fiscal || null, company.patente || null, company.cnss || null, company.rib || null])).rows[0];
+      `INSERT INTO company (raison_sociale,ice,adresse,ville,telephone,email,rc,if_fiscal,patente,cnss,rib,plan,abonnement_fin,actif)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'30j',$12,true) RETURNING *`,
+      [company.raison_sociale, company.ice || null, company.adresse || null, company.ville || null, company.telephone || null, company.email || null, company.rc || null, company.if_fiscal || null, company.patente || null, company.cnss || null, company.rib || null, new Date(Date.now() + 30 * 86400000)])).rows[0];
     const hash = await bcrypt.hash(user.password, 10);
     const u = (await conn.query(
       `INSERT INTO app_user (email,password_hash,full_name,role,company_id) VALUES ($1,$2,$3,'DIRECTEUR',$4) RETURNING id,email,full_name,role,company_id`,
@@ -1593,6 +1618,68 @@ app.get("/api/integrations/efacture", requireAuth, wrap(async (req, res) => {
   res.setHeader("Content-Type", "application/json");
   res.setHeader("Content-Disposition", `attachment; filename="preparation-efacture-${annee}-${String(mois).padStart(2, "0")}.json"`);
   res.end(JSON.stringify(out, null, 2));
+}));
+
+// ══════════════ SUPER ADMIN (gestion SaaS) ══════════════
+function requireSuper(req, res) {
+  if (req.user.role !== "DIRECTEUR" || req.user.company_id) { res.status(403).json({ error: "Réservé au super-administrateur" }); return false; }
+  return true;
+}
+app.get("/api/admin/overview", requireAuth, wrap(async (req, res) => {
+  if (!requireSuper(req, res)) return;
+  const rows = (await pool.query(
+    `SELECT c.id, c.raison_sociale, c.ice, c.ville, c.plan, c.abonnement_fin, c.actif,
+            (SELECT count(*)::int FROM app_user u WHERE u.company_id=c.id) AS nb_users
+     FROM company c ORDER BY c.id`)).rows;
+  res.json(rows.map((c) => ({ ...c, expire: !subActive(c) })));
+}));
+app.post("/api/admin/companies/:id/abonnement", requireAuth, wrap(async (req, res) => {
+  if (!requireSuper(req, res)) return;
+  const { plan } = req.body || {};
+  if (!(plan in PLAN_DUREE)) return res.status(400).json({ error: "Plan invalide (30j, 1an ou avie)" });
+  const fin = PLAN_DUREE[plan] === null ? null : new Date(Date.now() + PLAN_DUREE[plan] * 86400000);
+  const co = (await pool.query("UPDATE company SET plan=$2, abonnement_fin=$3, actif=true WHERE id=$1 RETURNING id,raison_sociale,plan,abonnement_fin,actif", [req.params.id, plan, fin])).rows[0];
+  if (!co) return res.status(404).json({ error: "Société introuvable" });
+  subCache.delete(Number(req.params.id));
+  res.json(co);
+}));
+app.post("/api/admin/companies/:id/etat", requireAuth, wrap(async (req, res) => {
+  if (!requireSuper(req, res)) return;
+  const co = (await pool.query("UPDATE company SET actif=$2 WHERE id=$1 RETURNING id,raison_sociale,actif", [req.params.id, !!(req.body || {}).actif])).rows[0];
+  if (!co) return res.status(404).json({ error: "Société introuvable" });
+  subCache.delete(Number(req.params.id));
+  res.json(co);
+}));
+app.get("/api/admin/users", requireAuth, wrap(async (req, res) => {
+  if (!requireSuper(req, res)) return;
+  const where = req.query.company_id ? "WHERE company_id=$1" : "";
+  const params = req.query.company_id ? [req.query.company_id] : [];
+  res.json((await pool.query(`SELECT id,email,full_name,role,company_id,totp_enabled FROM app_user ${where} ORDER BY id`, params)).rows);
+}));
+app.post("/api/admin/users", requireAuth, wrap(async (req, res) => {
+  if (!requireSuper(req, res)) return;
+  const { email, password, full_name, role, company_id } = req.body || {};
+  if (!email || !password) return res.status(400).json({ error: "Email et mot de passe requis" });
+  const hash = await bcrypt.hash(password, 10);
+  try {
+    const u = (await pool.query("INSERT INTO app_user (email,password_hash,full_name,role,company_id) VALUES ($1,$2,$3,$4,$5) RETURNING id,email,full_name,role,company_id",
+      [String(email).toLowerCase(), hash, full_name || null, role || "DIRECTEUR", company_id || null])).rows[0];
+    res.status(201).json(u);
+  } catch (e) { if (e.code === "23505") return res.status(409).json({ error: "Email déjà utilisé" }); throw e; }
+}));
+app.post("/api/admin/users/:id/password", requireAuth, wrap(async (req, res) => {
+  if (!requireSuper(req, res)) return;
+  const { password } = req.body || {};
+  if (!password || String(password).length < 4) return res.status(400).json({ error: "Mot de passe trop court (4 caractères min.)" });
+  const hash = await bcrypt.hash(String(password), 10);
+  const u = (await pool.query("UPDATE app_user SET password_hash=$2 WHERE id=$1 RETURNING id,email", [req.params.id, hash])).rows[0];
+  if (!u) return res.status(404).json({ error: "Utilisateur introuvable" });
+  res.json({ ok: true, email: u.email });
+}));
+app.delete("/api/admin/users/:id", requireAuth, wrap(async (req, res) => {
+  if (!requireSuper(req, res)) return;
+  if (Number(req.params.id) === req.user.sub) return res.status(400).json({ error: "Impossible de supprimer votre propre compte" });
+  await pool.query("DELETE FROM app_user WHERE id=$1", [req.params.id]); res.json({ ok: true });
 }));
 
 // ══════════════ BORDEREAU — module de saisie (chapitres + lignes) ══════════════

@@ -233,3 +233,10 @@ thead th[data-sortable]:hover{color:var(--asphalt)}
 .bordtab td{padding:3px 4px}
 .trow{display:flex;justify-content:space-between;align-items:center;padding:6px 2px;border-bottom:1px solid var(--line)}
 .trow.big{border-bottom:none;font-size:17px;background:var(--hazard);margin:6px -14px -14px;padding:12px 14px;border-radius:0 0 12px 12px}
+
+/* ---- Paywall (abonnement expiré) ---- */
+#paywall{position:fixed;inset:0;background:var(--asphalt);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px}
+.pw-card{background:#fff;border-radius:18px;padding:40px;max-width:440px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+.pw-ico{font-size:48px}
+.pw-card h2{margin:10px 0}
+.pw-prix{background:var(--hazard);border-radius:10px;padding:12px;font-weight:700;margin:16px 0}

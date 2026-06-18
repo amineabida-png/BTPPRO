@@ -17,6 +17,7 @@ async function api(path, opts = {}) {
   const res = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}), ...(activeCompany ? { "X-Company-Id": activeCompany } : {}), ...(opts.headers || {}) } });
   if (res.status === 401) { logout(); throw new Error("Session expirée"); }
   const data = await res.json().catch(() => ({}));
+  if (res.status === 402) { showPaywall(); throw new Error(data.error || "Abonnement expiré"); }
   if (!res.ok) throw new Error(data.error || "Erreur");
   return data;
 }
@@ -52,12 +53,23 @@ el("login-form").addEventListener("submit", async (e) => {
     token = d.token; me = d.user;
     localStorage.setItem("btp_token", token); localStorage.setItem("btp_user", JSON.stringify(me));
     pending2FA = null; if (el("twofa-code")) el("twofa-code").remove();
+    if (d.blocked) { showPaywall(d.subscription); return; }
     enterApp();
   } catch (err) { el("login-err").textContent = err.message; }
 });
 el("logout").addEventListener("click", logout);
 function logout() { token = null; me = null; activeCompany = null; localStorage.clear(); el("app").classList.add("hide"); el("login").classList.remove("hide"); }
-function enterApp() { el("login").classList.add("hide"); el("app").classList.remove("hide"); el("who").textContent = me ? (me.name || me.email) : ""; loadCompanies().then(loadPerms).then(() => { if (me && me.company_id) document.querySelector('.nav[data-view="onboarding"]')?.classList.add("hide"); if (typeof refreshAlertBadge === "function") refreshAlertBadge(); }); }
+function enterApp() { el("login").classList.add("hide"); el("app").classList.remove("hide"); el("who").textContent = me ? (me.name || me.email) : ""; loadCompanies().then(loadPerms).then(() => { if (me && me.company_id) { document.querySelector('.nav[data-view="onboarding"]')?.classList.add("hide"); document.querySelector('.nav[data-view="superadmin"]')?.classList.add("hide"); } if (typeof refreshAlertBadge === "function") refreshAlertBadge(); }); }
+function showPaywall(sub) {
+  const prix = "30 jours : 99 DH · 1 an : 990 DH · À vie : 3990 DH";
+  el("app").classList.add("hide"); el("login").classList.add("hide");
+  let o = el("paywall"); if (!o) { o = document.createElement("div"); o.id = "paywall"; document.body.appendChild(o); }
+  o.innerHTML = `<div class="pw-card"><div class="pw-ico">🔒</div><h2>Abonnement expiré</h2>
+    <p>Votre accès à BTPPro est actuellement <b>suspendu ou expiré</b>${sub && sub.plan ? " (formule " + sub.plan + ")" : ""}.</p>
+    <p>Pour réactiver votre compte, contactez votre fournisseur.</p>
+    <div class="pw-prix">${prix}</div>
+    <button class="btn" onclick="logout();document.getElementById('paywall').remove()">Retour à la connexion</button></div>`;
+}
 
 /* ===================== Multi-société ===================== */
 async function loadCompanies() {
@@ -120,7 +132,7 @@ const VIEW_DOMAIN = {
   integrations: null, users: "admin", societe: "admin",
   planning: "chantiers", pointage: "chantiers", tresorerie: "facturation",
   materiel: "chantiers", rapports: "chantiers", alertes: null,
-  compta: "rentabilite", journal: "admin", onboarding: "admin", bordereaux: "devis",
+  compta: "rentabilite", journal: "admin", onboarding: "admin", bordereaux: "devis", superadmin: "admin",
 };
 let myPerms = ["*"];
 function allowed(domain) { return domain == null || myPerms.includes("*") || myPerms.includes(domain); }
@@ -147,7 +159,7 @@ const ROUTES = {
   integrations: renderIntegrations, societe: renderSociete,
   planning: renderPlanning, pointage: renderPointage, tresorerie: renderTresorerie,
   materiel: renderMateriel, rapports: renderRapports, alertes: renderAlertes,
-  compta: renderCompta, journal: renderActivite, onboarding: renderOnboarding, bordereaux: renderBordereaux,
+  compta: renderCompta, journal: renderActivite, onboarding: renderOnboarding, bordereaux: renderBordereaux, superadmin: renderSuperAdmin,
 };
 async function show(v) {
   if (!allowed(VIEW_DOMAIN[v])) { V().innerHTML = `<div class="warn">⛔ Accès non autorisé pour votre rôle.</div>`; return; }
@@ -1362,6 +1374,74 @@ async function renderAlertes() {
 }
 async function refreshAlertBadge() {
   try { const d = await api("/api/alertes"); const nav = document.querySelector('.nav[data-view="alertes"]'); if (nav) nav.innerHTML = "🔔 Alertes" + (d.total ? ` <span class="badge">${d.total}</span>` : ""); } catch { /* ignore */ }
+}
+
+/* ===================== Super Admin (SaaS) ===================== */
+const PLAN_LABEL = { "30j": "30 jours", "1an": "1 an", "avie": "À vie" };
+async function renderSuperAdmin() {
+  const list = await api("/api/admin/overview");
+  const fmtDate = (d) => d ? new Date(d).toLocaleDateString("fr-FR") : "—";
+  V().innerHTML = `<div class="bar"><div><h1>👑 Super Admin</h1><div class="sub">Gestion des clients, abonnements et utilisateurs</div></div>
+    <button class="btn sm" onclick="show('onboarding')">+ Nouveau client</button></div>
+  <div class="grid kpis" style="margin-bottom:16px">
+    <div class="card kpi"><div class="lbl">30 jours</div><div class="val mono">99 <small>DH</small></div></div>
+    <div class="card kpi"><div class="lbl">1 an</div><div class="val mono">990 <small>DH</small></div></div>
+    <div class="card kpi ok"><div class="lbl">À vie</div><div class="val mono">3990 <small>DH</small></div></div>
+    <div class="card kpi flat"><div class="lbl">Clients</div><div class="val mono">${list.length}</div></div></div>
+  <div class="card"><div class="colhead">Sociétés clientes</div>
+    <table><thead><tr><th>Société</th><th>Formule</th><th>Échéance</th><th>Statut</th><th class="r">Users</th><th></th></tr></thead><tbody>
+    ${list.map((c) => `<tr>
+      <td><b>${c.raison_sociale || ""}</b>${c.ville ? '<div class="muted" style="font-size:12px">' + c.ville + "</div>" : ""}</td>
+      <td>${c.plan ? PLAN_LABEL[c.plan] || c.plan : "—"}</td>
+      <td>${c.plan === "avie" ? "Illimité" : fmtDate(c.abonnement_fin)}</td>
+      <td>${c.expire ? '<span class="pill" style="background:var(--rose-bg);color:var(--rose)">Expiré</span>' : '<span class="pill" style="background:var(--green-bg);color:var(--green)">Actif</span>'}</td>
+      <td class="r">${c.nb_users}</td>
+      <td class="r">
+        <select class="stsel" onchange="setPlan(${c.id},this.value)"><option value="">Activer…</option><option value="30j">30 jours (99)</option><option value="1an">1 an (990)</option><option value="avie">À vie (3990)</option></select>
+        <button class="btn sm ${c.actif ? "danger" : ""}" onclick="toggleEtat(${c.id},${c.actif ? "false" : "true"})">${c.actif ? "Suspendre" : "Réactiver"}</button>
+        <button class="btn sm ghost" onclick="adminUsers(${c.id},'${(c.raison_sociale || "").replace(/'/g, "")}')">👤 Utilisateurs</button>
+      </td></tr>`).join("")}
+    </tbody></table></div>
+  <div class="muted" style="margin-top:12px;font-size:13px">💡 L'activation est manuelle : tu encaisses le paiement du client, puis tu choisis sa formule ici. Les mises à jour de l'application (suite aux retours des clients) se déploient en poussant le code sur GitHub.</div>`;
+}
+async function setPlan(id, plan) {
+  if (!plan) return;
+  if (!confirm("Activer la formule « " + (PLAN_LABEL[plan] || plan) + " » pour ce client ?")) { renderSuperAdmin(); return; }
+  try { await api("/api/admin/companies/" + id + "/abonnement", { method: "POST", body: JSON.stringify({ plan }) }); renderSuperAdmin(); } catch (e) { alert(e.message); }
+}
+async function toggleEtat(id, actif) {
+  try { await api("/api/admin/companies/" + id + "/etat", { method: "POST", body: JSON.stringify({ actif }) }); renderSuperAdmin(); } catch (e) { alert(e.message); }
+}
+async function adminUsers(companyId, nom) {
+  const users = await api("/api/admin/users?company_id=" + companyId);
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>Utilisateurs — ${nom}</h3>
+    <table><thead><tr><th>Email</th><th>Nom</th><th>Rôle</th><th></th></tr></thead><tbody>
+    ${users.length ? users.map((u) => `<tr><td class="mono">${u.email}</td><td>${u.full_name || ""}</td><td>${u.role}</td>
+      <td class="r"><button class="btn sm ghost" onclick="resetPwd(${u.id},'${u.email.replace(/'/g, "")}')">🔑 Mot de passe</button> <button class="btn sm danger" onclick="adminDelUser(${u.id},${companyId},'${nom.replace(/'/g, "")}')">×</button></td></tr>`).join("") : `<tr><td colspan="4" class="muted">Aucun utilisateur.</td></tr>`}
+    </tbody></table>
+    <div class="colhead" style="margin-top:14px">Créer un utilisateur</div>
+    <div class="form" style="grid-template-columns:1fr 1fr">
+      <div class="field"><label>Email</label><input id="nu-email"></div>
+      <div class="field"><label>Nom complet</label><input id="nu-name"></div>
+      <div class="field"><label>Mot de passe</label><input id="nu-pwd" type="text"></div>
+      <div class="field"><label>Rôle</label><select id="nu-role"><option>DIRECTEUR</option><option>RH</option><option>COMPTABLE</option><option>CHEF_CHANTIER</option><option>OUVRIER</option></select></div>
+    </div>
+    <div class="mactions"><button class="btn ghost" onclick="el('modal-root').innerHTML=''">Fermer</button><button class="btn" onclick="adminCreateUser(${companyId},'${nom.replace(/'/g, "")}')">Créer</button></div>
+    </div></div>`;
+}
+async function adminCreateUser(companyId, nom) {
+  const body = { email: el("nu-email").value, full_name: el("nu-name").value, password: el("nu-pwd").value, role: el("nu-role").value, company_id: companyId };
+  if (!body.email || !body.password) { alert("Email et mot de passe requis."); return; }
+  try { await api("/api/admin/users", { method: "POST", body: JSON.stringify(body) }); adminUsers(companyId, nom); } catch (e) { alert(e.message); }
+}
+async function resetPwd(id, email) {
+  const pwd = prompt("Nouveau mot de passe pour " + email + " :", "");
+  if (!pwd) return;
+  try { await api("/api/admin/users/" + id + "/password", { method: "POST", body: JSON.stringify({ password: pwd }) }); alert("Mot de passe réinitialisé pour " + email + "."); } catch (e) { alert(e.message); }
+}
+async function adminDelUser(id, companyId, nom) {
+  if (!confirm("Supprimer cet utilisateur ?")) return;
+  try { await api("/api/admin/users/" + id, { method: "DELETE" }); adminUsers(companyId, nom); } catch (e) { alert(e.message); }
 }
 
 /* ===================== Bordereau des prix (module de saisie) ===================== */

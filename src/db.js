@@ -307,6 +307,11 @@ CREATE TABLE IF NOT EXISTS rapport_photo (
 -- Multi-tenant : rattachement d'un utilisateur à une société (NULL = super-admin)
 ALTER TABLE app_user ADD COLUMN IF NOT EXISTS company_id int REFERENCES company(id);
 
+-- Abonnement (vente SaaS)
+ALTER TABLE company ADD COLUMN IF NOT EXISTS plan text;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS abonnement_fin timestamptz;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS actif boolean DEFAULT true;
+
 -- Journal d'activité (audit trail)
 CREATE TABLE IF NOT EXISTS activite (
   id serial PRIMARY KEY,
