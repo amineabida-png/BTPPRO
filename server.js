@@ -1676,6 +1676,16 @@ app.post("/api/admin/users/:id/password", requireAuth, wrap(async (req, res) => 
   if (!u) return res.status(404).json({ error: "Utilisateur introuvable" });
   res.json({ ok: true, email: u.email });
 }));
+// Réinitialiser un mot de passe par email (client ayant perdu son mot de passe)
+app.post("/api/admin/reset-password", requireAuth, wrap(async (req, res) => {
+  if (!requireSuper(req, res)) return;
+  const { email, password } = req.body || {};
+  if (!email || !password || String(password).length < 4) return res.status(400).json({ error: "Email et mot de passe (4 caractères min.) requis" });
+  const hash = await bcrypt.hash(String(password), 10);
+  const u = (await pool.query("UPDATE app_user SET password_hash=$2 WHERE email=$1 RETURNING id,email,full_name,company_id", [String(email).toLowerCase().trim(), hash])).rows[0];
+  if (!u) return res.status(404).json({ error: "Aucun utilisateur avec cet email" });
+  res.json({ ok: true, email: u.email, company_id: u.company_id });
+}));
 app.delete("/api/admin/users/:id", requireAuth, wrap(async (req, res) => {
   if (!requireSuper(req, res)) return;
   if (Number(req.params.id) === req.user.sub) return res.status(400).json({ error: "Impossible de supprimer votre propre compte" });

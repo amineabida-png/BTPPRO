@@ -1403,7 +1403,27 @@ async function renderSuperAdmin() {
         <button class="btn sm danger" onclick="delCompany(${c.id},'${(c.raison_sociale || "").replace(/'/g, "")}')">🗑 Supprimer</button>
       </td></tr>`).join("")}
     </tbody></table></div>
+  <div class="card" style="margin-top:16px;max-width:600px">
+    <div class="colhead">🔑 Réinitialiser un mot de passe</div>
+    <div class="muted" style="font-size:12px;margin-bottom:10px">Un client a perdu son mot de passe ? Saisis son email et un nouveau mot de passe — il pourra se reconnecter immédiatement.</div>
+    <div class="form" style="grid-template-columns:1fr 1fr">
+      <div class="field"><label>Email du client</label><input id="rp-email" placeholder="client@exemple.ma"></div>
+      <div class="field"><label>Nouveau mot de passe</label><input id="rp-newpwd" type="text" placeholder="ex : BtpPro2026"></div>
+    </div>
+    <div class="mactions" style="justify-content:flex-start"><button class="btn" onclick="resetPwdByEmail()">Réinitialiser le mot de passe</button></div>
+    <div id="rp-msg" style="margin-top:10px;font-size:13px"></div>
+  </div>
   <div class="muted" style="margin-top:12px;font-size:13px">💡 L'activation est manuelle : tu encaisses le paiement du client, puis tu choisis sa formule ici. Les mises à jour de l'application (suite aux retours des clients) se déploient en poussant le code sur GitHub.</div>`;
+}
+async function resetPwdByEmail() {
+  const email = el("rp-email").value.trim(), pwd = el("rp-newpwd").value;
+  const msg = el("rp-msg");
+  if (!email || !pwd) { msg.innerHTML = '<span class="err">Email et nouveau mot de passe requis.</span>'; return; }
+  try {
+    const r = await api("/api/admin/reset-password", { method: "POST", body: JSON.stringify({ email, password: pwd }) });
+    msg.innerHTML = `✅ Mot de passe réinitialisé pour <b>${r.email}</b>. Communique-lui : <b>${pwd}</b>`;
+    el("rp-email").value = ""; el("rp-newpwd").value = "";
+  } catch (e) { msg.innerHTML = '<span class="err">' + e.message + "</span>"; }
 }
 async function setPlan(id, plan) {
   if (!plan) return;
