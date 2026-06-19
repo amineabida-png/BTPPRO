@@ -179,13 +179,22 @@ ul.org ul li::before{content:"";position:absolute;left:-13px;top:20px;width:11px
 
 @media(max-width:860px){
   .app{display:block}
-  .mtop{display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:50;background:var(--asphalt);color:#fff;padding:10px 14px;box-shadow:0 2px 10px rgba(0,0,0,.15)}
-  .burger{background:none;border:0;color:#fff;font-size:24px;line-height:1;cursor:pointer;padding:4px 8px;border-radius:8px}
+  .mtop{display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:1100;background:var(--asphalt);color:#fff;box-shadow:0 2px 10px rgba(0,0,0,.15);
+    padding:8px 14px;
+    padding-top:calc(8px + env(safe-area-inset-top, 0px));
+    padding-left:calc(14px + env(safe-area-inset-left, 0px));
+    padding-right:calc(14px + env(safe-area-inset-right, 0px));}
+  .burger{background:none;border:0;color:#fff;font-size:26px;line-height:1;cursor:pointer;border-radius:10px;
+    min-width:46px;min-height:46px;display:flex;align-items:center;justify-content:center;padding:0;
+    -webkit-tap-highlight-color:rgba(245,179,1,.35);touch-action:manipulation}
   .burger:active{background:var(--asphalt-3)}
   .mtop-brand{display:flex;align-items:center;gap:10px;font-family:"Oswald",sans-serif;font-weight:700;font-size:19px;text-transform:uppercase;letter-spacing:.03em}
-  .side{position:fixed;top:0;left:0;height:100vh;width:84vw;max-width:300px;z-index:1000;transform:translateX(-100%);transition:transform .25s ease;flex-direction:column;align-items:stretch;padding:16px 12px;box-shadow:6px 0 28px rgba(0,0,0,.4);overflow-y:auto}
+  .side{position:fixed;top:0;left:0;height:100vh;height:100dvh;width:84vw;max-width:300px;z-index:1200;transform:translateX(-100%);transition:transform .25s ease;flex-direction:column;align-items:stretch;box-shadow:6px 0 28px rgba(0,0,0,.4);overflow-y:auto;-webkit-overflow-scrolling:touch;
+    padding:12px 12px 16px;
+    padding-top:calc(14px + env(safe-area-inset-top, 0px));
+    padding-left:calc(12px + env(safe-area-inset-left, 0px));}
   .app.side-open .side{transform:translateX(0)}
-  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999}
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1150}
   .app.side-open .scrim{display:block}
   .navgrp{display:block}
   .nav{font-size:15px;padding:12px 12px}

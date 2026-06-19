@@ -258,6 +258,7 @@ function modalForm(title, fields, initial = {}) {
     const inputs = fields.map((f) => {
       const val = initial[f.key] ?? "";
       if (f.type === "select") return `<div class="field"><label>${f.label}</label><select data-k="${f.key}">${(f.options || []).map((o) => `<option value="${o.value}" ${val == o.value ? "selected" : ""}>${o.label}</option>`).join("")}</select></div>`;
+      if (f.type === "textarea") return `<div class="field" style="grid-column:1/-1"><label>${f.label}</label><textarea data-k="${f.key}" rows="3" style="width:100%;font:inherit;padding:8px;border:1px solid var(--line,#d7dde5);border-radius:8px;resize:vertical">${val}</textarea></div>`;
       return `<div class="field"><label>${f.label}</label><input data-k="${f.key}" type="${f.type || "text"}" value="${val}"></div>`;
     }).join("");
     el("modal-root").innerHTML = `<div class="overlay"><div class="modal"><h3>${title}</h3><div class="mform">${inputs}</div>
@@ -1048,7 +1049,7 @@ async function ficheST(id) {
     </div>
     <div class="bar"><div class="colhead">Contrats de marché</div><button class="btn sm" onclick="addContratST(${s.id})">+ Contrat</button></div>
     <table class="lines"><thead><tr><th>Objet</th><th>Chantier</th><th class="r">Montant marché</th><th class="r">RG</th><th>Statut</th><th></th></tr></thead><tbody>
-    ${s.contrats.map((c) => `<tr><td>${c.objet || ""}</td><td>${c.chantier_code || ""}</td><td class="r mono">${fmt(c.montant_marche)}</td><td class="r">${c.rg_taux} %</td><td><span class="pill">${c.statut}</span></td><td class="r"><button class="btn sm" onclick="situST(${c.id},${s.id})">Situation</button></td></tr>`).join("") || `<tr><td colspan="6" class="muted">Aucun contrat.</td></tr>`}
+    ${s.contrats.map((c) => `<tr><td>${c.objet || ""}</td><td>${c.chantier_code || ""}</td><td class="r mono">${fmt(c.montant_marche)}</td><td class="r">${c.rg_taux} %</td><td><span class="pill">${c.statut}</span></td><td class="r"><button class="btn sm ghost" onclick="openDoc('/api/st-contrats/${c.id}/contrat/pdf')">📄 Contrat</button> <button class="btn sm" onclick="situST(${c.id},${s.id})">Situation</button></td></tr>`).join("") || `<tr><td colspan="6" class="muted">Aucun contrat.</td></tr>`}
     </tbody></table>
     <div class="colhead" style="margin-top:12px">Situations de paiement</div>
     <table class="lines"><thead><tr><th>Date</th><th class="r">Avanc.</th><th class="r">Montant</th><th class="r">RG</th><th class="r">Net à payer</th><th>Statut</th></tr></thead><tbody>
@@ -1060,11 +1061,26 @@ async function ficheST(id) {
 }
 async function addContratST(id) {
   await getCache("chantiers");
-  const d = await modalForm("Nouveau contrat de marché", [
+  const d = await modalForm("Nouveau contrat de sous-traitance", [
+    { key: "numero", label: "N° du contrat (auto si vide)" },
     { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" },
-    { key: "objet", label: "Objet" }, { key: "montant_marche", label: "Montant du marché", type: "number" },
-    { key: "rg_taux", label: "Retenue de garantie (%)", type: "number" }, { key: "date_debut", label: "Début", type: "date" }]);
-  if (!d) return; d.sous_traitant_id = id; await api("/api/st-contrats", { method: "POST", body: JSON.stringify(d) }); ficheST(id);
+    { key: "objet", label: "Objet des travaux" },
+    { key: "description", label: "Consistance / description des travaux", type: "textarea" },
+    { key: "montant_marche", label: "Montant du marché HT (MAD)", type: "number" },
+    { key: "tva_taux", label: "TVA (%)", type: "number" },
+    { key: "rg_taux", label: "Retenue de garantie (%)", type: "number" },
+    { key: "avance_taux", label: "Avance de démarrage (%)", type: "number" },
+    { key: "delai_execution", label: "Délai d'exécution (ex : 90 jours)" },
+    { key: "date_debut", label: "Date de début", type: "date" },
+    { key: "date_fin", label: "Date de fin", type: "date" },
+    { key: "modalites_paiement", label: "Modalités de paiement (laisser vide = texte standard)", type: "textarea" },
+    { key: "penalites", label: "Pénalités de retard (laisser vide = 1/1000 par jour, plafond 10%)", type: "textarea" },
+    { key: "lieu_signature", label: "Lieu de signature" },
+    { key: "date_signature", label: "Date de signature", type: "date" },
+  ], { tva_taux: 20, rg_taux: 10 });
+  if (!d) return; d.sous_traitant_id = id;
+  try { await api("/api/st-contrats", { method: "POST", body: JSON.stringify(d) }); ficheST(id); }
+  catch (e) { alert(e.message); }
 }
 async function situST(contratId, stId) {
   const d = await modalForm("Situation de paiement", [{ key: "avancement", label: "Avancement cumulé (%)", type: "number" }]);

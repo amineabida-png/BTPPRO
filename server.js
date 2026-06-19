@@ -463,7 +463,7 @@ const RESOURCES = {
   controles:      ["controle_securite", ["chantier_id","date_controle","type","conforme","observations","controleur"]],
   epi:            ["epi", ["employee_id","designation","type","date_remise","date_retour","etat"]],
   "fournisseur-evals": ["fournisseur_evaluation", ["fournisseur_id","date_eval","note_qualite","note_delai","note_prix","commentaire"]],
-  "st-contrats":  ["soustraitant_contrat", ["sous_traitant_id","chantier_id","objet","montant_marche","rg_taux","date_debut","date_fin","statut"]],
+  "st-contrats":  ["soustraitant_contrat", ["sous_traitant_id","chantier_id","numero","objet","description","montant_marche","tva_taux","rg_taux","avance_taux","delai_execution","modalites_paiement","penalites","date_debut","date_fin","lieu_signature","date_signature","statut"]],
   "st-evals":     ["soustraitant_evaluation", ["sous_traitant_id","date_eval","note","commentaire"]],
   articles:       ["article", ["reference","designation","unite","stock","seuil","prix_unitaire"]],
   "demandes-achat": ["demande_achat", ["objet","chantier_id","statut"]],
@@ -1055,11 +1055,16 @@ function docLetterhead(doc, co, title, numero, dateStr) {
   doc.font("Helvetica").fontSize(8.5).fillColor("#5A6473");
   const lines = [co.adresse, co.ville, [co.telephone, co.email].filter(Boolean).join(" · ")].filter(Boolean);
   doc.text(lines.join("\n"), infoX, 64, { width: infoW });
-  // Cartouche document (droite)
-  doc.roundedRect(M + W - 168, 40, 168, 64, 6).fill("#15171C");
-  doc.fill("#F5B301").font("Helvetica-Bold").fontSize(13).text(title, M + W - 158, 52, { width: 148, align: "right" });
-  doc.fill("#fff").font("Helvetica").fontSize(9).text("N° " + (numero || "—"), M + W - 158, 72, { width: 148, align: "right" });
-  doc.fillColor("#cbd5e1").fontSize(8.5).text(dateStr, M + W - 158, 86, { width: 148, align: "right" });
+  // Cartouche document (droite) — taille du titre adaptée à sa longueur
+  const tlen = (title || "").length;
+  const tsize = tlen > 22 ? 10 : tlen > 16 ? 11.5 : 13;
+  doc.font("Helvetica-Bold").fontSize(tsize);
+  const th = doc.heightOfString(title || "", { width: 148, align: "right" });
+  const boxH = Math.max(64, th + 42);
+  doc.roundedRect(M + W - 168, 40, 168, boxH, 6).fill("#15171C");
+  doc.fill("#F5B301").font("Helvetica-Bold").fontSize(tsize).text(title, M + W - 158, 50, { width: 148, align: "right" });
+  doc.fill("#fff").font("Helvetica").fontSize(9).text("N° " + (numero || "—"), M + W - 158, 50 + th + 6, { width: 148, align: "right" });
+  doc.fillColor("#cbd5e1").fontSize(8.5).text(dateStr, M + W - 158, 50 + th + 19, { width: 148, align: "right" });
   // Bande hazard
   doc.rect(M, 116, W, 4).fill("#F5B301");
   return 132;
@@ -1897,6 +1902,110 @@ app.get("/api/bordereaux/:id/pdf", requireAuth, wrap(async (req, res) => {
   tline("T.V.A. 20 %", tva);
   tline("TOTAL T.T.C.", grand + tva, true);
   docFooter(doc, co, "Bordereau des prix / détail estimatif.");
+  doc.end();
+}));
+
+// Montant en toutes lettres (français)
+function frMontantLettres(n) {
+  n = Math.floor(Math.abs(Number(n) || 0));
+  if (n === 0) return "zéro";
+  const u = ["", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix", "onze", "douze", "treize", "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf"];
+  const diz = ["", "", "vingt", "trente", "quarante", "cinquante", "soixante", "soixante", "quatre-vingt", "quatre-vingt"];
+  const below100 = (x) => {
+    if (x < 20) return u[x];
+    const d = Math.floor(x / 10), un = x % 10;
+    if (d === 7 || d === 9) { const rem = 10 + un; const li = (d === 7 && rem === 11) ? "-et-" : "-"; return diz[d] + li + u[rem]; }
+    let s = diz[d];
+    if (un === 0) return d === 8 ? s + "s" : s;
+    if (un === 1 && d >= 2 && d <= 6) return s + "-et-un";
+    return s + "-" + u[un];
+  };
+  const below1000 = (x) => {
+    const c = Math.floor(x / 100), r = x % 100; let s = "";
+    if (c > 0) { s = (c === 1 ? "cent" : u[c] + " cent"); if (r === 0 && c > 1) s += "s"; }
+    if (r > 0) s += (s ? " " : "") + below100(r);
+    return s;
+  };
+  const parts = [];
+  const mrd = Math.floor(n / 1e9); n %= 1e9;
+  const mln = Math.floor(n / 1e6); n %= 1e6;
+  const mil = Math.floor(n / 1e3); n %= 1e3;
+  if (mrd > 0) parts.push((mrd === 1 ? "un" : below1000(mrd)) + " milliard" + (mrd > 1 ? "s" : ""));
+  if (mln > 0) parts.push((mln === 1 ? "un" : below1000(mln)) + " million" + (mln > 1 ? "s" : ""));
+  if (mil > 0) parts.push(mil === 1 ? "mille" : below1000(mil) + " mille");
+  if (n > 0) parts.push(below1000(n));
+  return parts.join(" ");
+}
+
+// ══════════════ CONTRAT DE SOUS-TRAITANCE (PDF chiffré, à signer) ══════════════
+app.get("/api/st-contrats/:id/contrat/pdf", requireAuth, wrap(async (req, res) => {
+  const sc = (await pool.query("SELECT * FROM soustraitant_contrat WHERE id=$1", [req.params.id])).rows[0];
+  if (!sc) return res.status(404).json({ error: "Contrat introuvable" });
+  const st = (await pool.query("SELECT * FROM sous_traitant WHERE id=$1", [sc.sous_traitant_id])).rows[0] || {};
+  const ch = sc.chantier_id ? (await pool.query("SELECT * FROM chantier WHERE id=$1", [sc.chantier_id])).rows[0] : null;
+  const co = await getCompany(await cid(req));
+  const M = 40, W = 515;
+  const ht = Number(sc.montant_marche) || 0, tx = Number(sc.tva_taux) || 20, tva = ht * tx / 100, ttc = ht + tva;
+  const rg = Number(sc.rg_taux) || 0, av = Number(sc.avance_taux) || 0;
+  const numero = sc.numero || ("ST-" + new Date().getFullYear() + "-" + String(sc.id).padStart(4, "0"));
+  const dateSig = sc.date_signature ? new Date(sc.date_signature) : new Date();
+  const lieu = sc.lieu_signature || co.ville || "—";
+  const penalites = sc.penalites || "Un pour mille (1/1000) du montant du marché par jour calendaire de retard, appliquées de plein droit et sans mise en demeure. Le montant cumulé des pénalités est plafonné à dix pour cent (10%) du montant du marché.";
+  const modalites = sc.modalites_paiement || "Les paiements sont effectués par situations établies selon l'avancement réel des travaux, dans un délai de soixante (60) jours à compter de la réception de la facture, par virement bancaire au compte du Sous-traitant.";
+  let delai = sc.delai_execution;
+  if (!delai && sc.date_debut && sc.date_fin) { const dd = Math.round((new Date(sc.date_fin) - new Date(sc.date_debut)) / 86400000); if (dd > 0) delai = dd + " jours calendaires"; }
+  delai = delai || "à convenir entre les parties";
+
+  const doc = newDoc(res, `contrat-sous-traitance-${numero}.pdf`);
+  let y0 = docLetterhead(doc, co, "CONTRAT DE SOUS-TRAITANCE", numero, dateSig.toLocaleDateString("fr-FR"));
+  doc.y = y0 + 6; doc.x = M;
+  const para = (t, o = {}) => { doc.font(o.bold ? "Helvetica-Bold" : "Helvetica").fontSize(o.size || 9.5).fillColor(o.color || "#15171C").text(t, M, doc.y, { width: W, align: o.align || "justify" }); doc.moveDown(o.gap == null ? 0.5 : o.gap); };
+  const article = (num, title, body) => { if (doc.y > 715) doc.addPage(); doc.font("Helvetica-Bold").fontSize(10).fillColor("#15171C").text("ARTICLE " + num + " — " + title, M, doc.y, { width: W }); doc.moveDown(0.15); para(body, { gap: 0.55 }); };
+
+  para("Le présent contrat de sous-traitance est conclu en application du Dahir du 9 ramadan 1331 (12 août 1913) formant Code des Obligations et des Contrats (D.O.C.) et des usages en vigueur dans le secteur du bâtiment et des travaux publics au Maroc.", { gap: 0.6 });
+  para("ENTRE LES SOUSSIGNÉS :", { bold: true, gap: 0.35 });
+  para(`${co.raison_sociale || "—"}, ${co.adresse ? co.adresse + ", " : ""}${co.ville || ""}, ICE ${co.ice || "—"}${co.rc ? ", RC " + co.rc : ""}, représentée par son représentant légal dûment habilité,`, { gap: 0.2 });
+  para("ci-après dénommée « L'ENTREPRENEUR PRINCIPAL » (le donneur d'ordre), d'une part,", { gap: 0.5 });
+  para("ET", { bold: true, gap: 0.35 });
+  para(`${st.raison_sociale || "—"}${st.specialite ? " — " + st.specialite : ""}, ${st.contact ? "représentée par " + st.contact + ", " : ""}${st.telephone ? "Tél. " + st.telephone : ""},`, { gap: 0.2 });
+  para("ci-après dénommée « LE SOUS-TRAITANT », d'autre part,", { gap: 0.5 });
+  para("Il a été convenu et arrêté ce qui suit :", { bold: true, gap: 0.6 });
+
+  article("1", "OBJET DU CONTRAT", `L'Entrepreneur principal confie au Sous-traitant, qui l'accepte, l'exécution des travaux suivants : ${sc.objet || "—"}${ch ? `, dans le cadre du chantier « ${ch.nom} »${ch.ville ? " à " + ch.ville : ""}${ch.code ? " (réf. " + ch.code + ")" : ""}` : ""}.`);
+  article("2", "CONSISTANCE DES TRAVAUX", (sc.description ? sc.description + " " : "") + "Les travaux seront exécutés conformément aux règles de l'art, aux plans et au bordereau des prix éventuellement annexés, aux normes marocaines homologuées et aux spécifications techniques applicables.");
+
+  if (doc.y > 700) doc.addPage();
+  doc.font("Helvetica-Bold").fontSize(10).fillColor("#15171C").text("ARTICLE 3 — MONTANT DU MARCHÉ", M, doc.y, { width: W }); doc.moveDown(0.25);
+  const moneyRow = (lbl, val, strong) => { const yy = doc.y; if (strong) doc.rect(M + 250, yy - 2, W - 250, 16).fill("#F5B301"); doc.font(strong ? "Helvetica-Bold" : "Helvetica").fontSize(9.5).fillColor("#15171C").text(lbl, M + 6, yy, { width: 240 }); doc.font(strong ? "Helvetica-Bold" : "Helvetica").fillColor("#15171C").text(moneyFR(val), M + 256, yy, { width: W - 262, align: "right" }); doc.y = yy + 16; };
+  moneyRow("Montant hors taxes (HT)", ht);
+  moneyRow(`T.V.A. (${tx} %)`, tva);
+  moneyRow("Montant toutes taxes comprises (TTC)", ttc, true);
+  doc.moveDown(0.35);
+  para(`Soit la somme de : ${frMontantLettres(Math.round(ttc))} dirhams toutes taxes comprises. Le prix est ferme et non révisable, sauf stipulation contraire écrite et acceptée par les deux parties.`, { gap: 0.6 });
+
+  article("4", "DÉLAI D'EXÉCUTION", `Le délai d'exécution des travaux est fixé à ${delai}${sc.date_debut ? `, à compter du ${new Date(sc.date_debut).toLocaleDateString("fr-FR")}` : ""}${sc.date_fin ? ` et jusqu'au ${new Date(sc.date_fin).toLocaleDateString("fr-FR")}` : ""}. Tout dépassement non justifié expose le Sous-traitant aux pénalités prévues à l'article 8.`);
+  article("5", "MODALITÉS DE PAIEMENT", modalites + (av > 0 ? ` Une avance de démarrage de ${av}% du montant du marché, soit ${moneyFR(ht * av / 100)}, sera versée au Sous-traitant et récupérée par déduction sur les situations ultérieures.` : ""));
+  article("6", "RETENUE DE GARANTIE", rg > 0 ? `Une retenue de garantie de ${rg}% est prélevée sur chaque situation, soit un montant prévisionnel de ${moneyFR(ht * rg / 100)}. Elle couvre les réserves éventuelles et est restituée, ou la caution qui la remplace est libérée, à la suite de la mainlevée délivrée par l'Entrepreneur principal dans un délai de trois (3) mois suivant la réception définitive des travaux.` : "Aucune retenue de garantie n'est prélevée au titre du présent contrat.");
+  article("7", "PÉNALITÉS DE RETARD", penalites);
+  article("8", "ASSURANCES ET RESPONSABILITÉS", "Le Sous-traitant déclare être assuré au titre de la responsabilité civile professionnelle et, le cas échéant, de la responsabilité décennale prévue à l'article 769 du D.O.C. Il s'engage à remettre à l'Entrepreneur principal, avant tout commencement des travaux, les attestations d'assurance correspondantes en cours de validité. Le Sous-traitant demeure seul responsable des dommages causés aux tiers et au chantier du fait de l'exécution de ses travaux.");
+  article("9", "OBLIGATIONS SOCIALES ET DE SÉCURITÉ", "Le Sous-traitant fait son affaire personnelle de l'application, à l'égard de son personnel, de la législation du travail et de la réglementation sociale en vigueur au Maroc, notamment en matière d'immatriculation et de déclaration à la C.N.S.S., d'hygiène et de sécurité sur les chantiers. Il remettra, sur demande, l'attestation de régularité C.N.S.S. correspondante.");
+  article("10", "RÉCEPTION DES TRAVAUX", "Les travaux font l'objet d'une réception provisoire à leur achèvement, puis d'une réception définitive à l'expiration du délai de garantie. La réception définitive emporte libération de la retenue de garantie dans les conditions de l'article 6.");
+  article("11", "RÉSILIATION", "En cas de manquement de l'une des parties à ses obligations, et après mise en demeure restée sans effet pendant quinze (15) jours, l'autre partie peut résilier le présent contrat de plein droit, sans préjudice de tous dommages et intérêts. La résiliation peut également intervenir en cas de force majeure, telle que définie aux articles 268 et 269 du D.O.C.");
+  article("12", "RÈGLEMENT DES LITIGES", `Tout litige relatif à l'interprétation ou à l'exécution du présent contrat sera, à défaut de règlement amiable, soumis aux tribunaux compétents de ${co.ville || lieu}, ou réglé par voie d'arbitrage conformément à la loi n° 95-17 relative à l'arbitrage et à la médiation conventionnelle.`);
+
+  if (doc.y > 630) doc.addPage();
+  doc.moveDown(0.5);
+  para(`Fait à ${lieu}, le ${dateSig.toLocaleDateString("fr-FR")}, en deux (2) exemplaires originaux de même valeur, chaque partie reconnaissant en avoir reçu un.`, { gap: 0.8 });
+  const sy = doc.y + 6, sw = (W - 20) / 2;
+  doc.font("Helvetica-Bold").fontSize(9).fillColor("#15171C").text("L'ENTREPRENEUR PRINCIPAL", M, sy, { width: sw, align: "center" });
+  doc.text("LE SOUS-TRAITANT", M + sw + 20, sy, { width: sw, align: "center" });
+  doc.font("Helvetica").fontSize(8).fillColor("#5A6473").text(co.raison_sociale || "", M, sy + 13, { width: sw, align: "center" });
+  doc.text(st.raison_sociale || "", M + sw + 20, sy + 13, { width: sw, align: "center" });
+  doc.fontSize(7.5).fillColor("#94a3b8").text("(Lu et approuvé, cachet et signature)", M, sy + 26, { width: sw, align: "center" });
+  doc.text("(Lu et approuvé, cachet et signature)", M + sw + 20, sy + 26, { width: sw, align: "center" });
+  doc.lineWidth(0.8).strokeColor("#cbd5e1");
+  doc.rect(M, sy + 40, sw, 58).stroke();
+  doc.rect(M + sw + 20, sy + 40, sw, 58).stroke();
   doc.end();
 }));
 
