@@ -215,22 +215,23 @@ app.get("/api/employees", requireAuth, wrap(async (req, res) => {
     WHERE e.actif AND e.company_id = $1 ORDER BY e.matricule`, [await cid(req)]);
   res.json(rows.map((e) => ({ ...e, paie: calculatePayroll({ salaireBase: Number(e.salaire_effectif), moisAnciennete: e.mois_anciennete, personnesCharge: e.personnes_charge }) })));
 }));
+const EMP_COLS = ["matricule", "nom", "poste", "salaire_base", "mois_anciennete", "personnes_charge", "cin", "cnss", "date_naissance", "lieu_naissance", "sexe", "situation_familiale", "adresse", "telephone", "email", "date_embauche", "type_contrat", "date_fin_contrat", "qualification", "rib", "banque", "cimr", "mutuelle"];
 app.post("/api/employees", requireAuth, wrap(async (req, res) => {
-  const { matricule, nom, poste, salaire_base, mois_anciennete = 0, personnes_charge = 0, cin, cnss } = req.body || {};
-  if (!matricule || !nom || !salaire_base) return res.status(400).json({ error: "matricule, nom et salaire_base requis" });
-  const { rows } = await pool.query(
-    `INSERT INTO employee (matricule,nom,poste,salaire_base,mois_anciennete,personnes_charge,cin,cnss,company_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-    [matricule, nom, poste || null, salaire_base, mois_anciennete, personnes_charge, cin || null, cnss || null, await cid(req)]);
+  const b = req.body || {};
+  if (!b.matricule || !b.nom || !b.salaire_base) return res.status(400).json({ error: "Matricule, nom et salaire de base sont requis" });
+  const cols = EMP_COLS.filter((c) => b[c] !== undefined && b[c] !== "");
+  const vals = cols.map((c) => b[c]);
+  cols.push("company_id"); vals.push(await cid(req));
+  const ph = cols.map((_, i) => `$${i + 1}`);
+  const { rows } = await pool.query(`INSERT INTO employee (${cols.join(",")}) VALUES (${ph.join(",")}) RETURNING *`, vals);
   res.status(201).json(rows[0]);
 }));
 app.put("/api/employees/:id", requireAuth, wrap(async (req, res) => {
-  const { nom, poste, cin, cnss, salaire_base, mois_anciennete, personnes_charge } = req.body || {};
-  const { rows } = await pool.query(
-    `UPDATE employee SET nom=COALESCE($2,nom), poste=COALESCE($3,poste), cin=COALESCE($4,cin), cnss=COALESCE($8,cnss),
-       salaire_base=COALESCE($5,salaire_base), mois_anciennete=COALESCE($6,mois_anciennete),
-       personnes_charge=COALESCE($7,personnes_charge) WHERE id=$1 RETURNING *`,
-    [req.params.id, nom, poste, cin, salaire_base, mois_anciennete, personnes_charge, cnss]);
+  const b = req.body || {};
+  const cols = EMP_COLS.filter((c) => b[c] !== undefined && b[c] !== "");
+  if (!cols.length) return res.status(400).json({ error: "Aucune donnée valide" });
+  const set = cols.map((c, i) => `${c} = $${i + 2}`);
+  const { rows } = await pool.query(`UPDATE employee SET ${set.join(",")} WHERE id = $1 RETURNING *`, [req.params.id, ...cols.map((c) => b[c])]);
   if (!rows[0]) return res.status(404).json({ error: "Salarié introuvable" });
   res.json(rows[0]);
 }));
@@ -458,18 +459,18 @@ const RESOURCES = {
   chantiers:      ["chantier", ["code","nom","client","ville","statut","budget_prevu","date_debut","date_fin_prevue","latitude","longitude","type_travaux","description","adresse","quartier","titre_foncier","superficie_terrain","surface_batie","nb_niveaux","mo_representant","mo_telephone","mo_email","architecte","architecte_ordre","bet","laboratoire","topographe","maitre_oeuvre","conducteur_travaux","chef_chantier","permis_numero","permis_date","permis_autorite","permis_dossier","permis_habiter","montant_marche","tva_taux","rg_taux","avance_taux","mode_passation","date_os","delai_execution","date_reception_provisoire","date_reception_definitive","assurance_rcd_compagnie","assurance_rcd_police","assurance_trc_compagnie","assurance_trc_police","cnss_chantier","decl_ouverture"]],
   contrats:       ["contrat", ["employee_id","type","poste","salaire_base","date_debut","date_fin","actif"]],
   factures:       ["facture", ["numero","client","chantier_id","type","montant_ht","tva","montant_ttc","statut","date_emission"]],
-  incidents:      ["incident", ["chantier_id","type","gravite","description","date_incident","statut","employee_id","jours_arret","mesures"]],
+  incidents:      ["incident", ["chantier_id","type","gravite","description","date_incident","statut","employee_id","jours_arret","mesures","lieu","heure","victime","temoins","type_accident"]],
   documents:      ["document", ["nom","type","categorie","chantier_id","url","version","statut"]],
-  controles:      ["controle_securite", ["chantier_id","date_controle","type","conforme","observations","controleur"]],
+  controles:      ["controle_securite", ["chantier_id","date_controle","type","conforme","observations","controleur","domaine","actions_correctives","echeance"]],
   epi:            ["epi", ["employee_id","designation","type","date_remise","date_retour","etat"]],
   "fournisseur-evals": ["fournisseur_evaluation", ["fournisseur_id","date_eval","note_qualite","note_delai","note_prix","commentaire"]],
   "st-contrats":  ["soustraitant_contrat", ["sous_traitant_id","chantier_id","numero","objet","description","montant_marche","tva_taux","rg_taux","avance_taux","delai_execution","modalites_paiement","penalites","date_debut","date_fin","lieu_signature","date_signature","statut"]],
   "st-evals":     ["soustraitant_evaluation", ["sous_traitant_id","date_eval","note","commentaire"]],
-  articles:       ["article", ["reference","designation","unite","stock","seuil","prix_unitaire"]],
-  "demandes-achat": ["demande_achat", ["objet","chantier_id","statut"]],
+  articles:       ["article", ["reference","designation","unite","stock","seuil","prix_unitaire","cmup","categorie","emplacement","fournisseur","tva_taux"]],
+  "demandes-achat": ["demande_achat", ["objet","chantier_id","statut","demandeur","date_demande","date_besoin","priorite","quantite","unite","article","observations"]],
   "bons-commande":  ["bon_commande", ["numero","fournisseur_id","montant","statut","date_commande"]],
-  fournisseurs:   ["fournisseur", ["raison_sociale","ice","contact","telephone","email","conditions_paiement","delai_livraison"]],
-  clients:        ["client", ["raison_sociale","ice","contact","telephone","email","adresse","ville"]],
+  fournisseurs:   ["fournisseur", ["raison_sociale","ice","contact","telephone","email","conditions_paiement","delai_livraison","rc","if_fiscal","patente","adresse","ville","rib","banque","famille"]],
+  clients:        ["client", ["raison_sociale","ice","contact","telephone","email","adresse","ville","rc","if_fiscal","patente","type"]],
   "sous-traitants": ["sous_traitant", ["raison_sociale","specialite","contact","telephone"]],
   "situations-st":  ["soustraitant_situation", ["sous_traitant_id","chantier_id","montant","statut","date_situation"]],
   conges:         ["conge", ["employee_id","type","date_debut","date_fin","jours","statut","motif"]],
@@ -478,7 +479,7 @@ const RESOURCES = {
   pointages:      ["pointage", ["employee_id","chantier_id","date_jour","heures","heures_sup"]],
   taches:         ["tache", ["chantier_id","libelle","date_debut","date_fin","avancement","responsable","statut"]],
   paiements:      ["paiement", ["sens","facture_id","tiers","montant","date_paiement","mode","reference"]],
-  materiel:       ["materiel", ["code","designation","type","etat","valeur_acquisition","date_acquisition","chantier_id"]],
+  materiel:       ["materiel", ["code","designation","type","etat","valeur_acquisition","date_acquisition","chantier_id","marque","modele","immatriculation","num_serie","fournisseur","date_mise_service","compteur","unite_compteur","assurance_compagnie","assurance_police","date_assurance","prochaine_maintenance","observations"]],
 };
 const SCOPED_ROUTES = new Set(["chantiers", "clients", "factures", "incidents", "documents", "controles", "epi", "conges", "demandes-achat", "fournisseurs", "sous-traitants", "articles", "pointages", "taches", "paiements", "materiel"]);
 for (const [route, [table, cols]] of Object.entries(RESOURCES)) {

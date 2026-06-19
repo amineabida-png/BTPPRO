@@ -292,10 +292,10 @@ async function editEntity(ep, fields, obj, after) {
   catch (e) { alert(e.message); }
 }
 function findCached(key, id) { return (caches[key] || []).find((x) => x.id === id); }
-function editEmp(id) { const o = findCached("employees", id); if (o) editEntity("/api/employees", [{ key: "nom", label: "Nom" }, { key: "poste", label: "Poste" }, { key: "cin", label: "CIN" }, { key: "cnss", label: "N° CNSS" }, { key: "mois_anciennete", label: "Ancienneté (mois)", type: "number" }, { key: "personnes_charge", label: "Personnes à charge", type: "number" }], o, () => { clearCache("employees"); renderEmps(); }); }
+function editEmp(id) { const o = findCached("employees", id); if (o) empForm(o); }
 function editChantier(id) { const o = findCached("chantiers", id); if (o) chantierForm(o); }
-function editArticle(id) { const o = findCached("articles", id); if (o) editEntity("/api/articles", [{ key: "reference", label: "Référence" }, { key: "designation", label: "Désignation" }, { key: "unite", label: "Unité" }, { key: "seuil", label: "Seuil d'alerte", type: "number" }], o, () => renderStock()); }
-function editFournisseur(id) { const o = findCached("fournisseurs", id); if (o) editEntity("/api/fournisseurs", [{ key: "raison_sociale", label: "Raison sociale" }, { key: "ice", label: "ICE" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }, { key: "email", label: "Email" }, { key: "conditions_paiement", label: "Conditions de paiement" }], o, () => renderFournisseurs()); }
+function editArticle(id) { const o = findCached("articles", id); if (o) editEntity("/api/articles", ARTICLE_FIELDS, o, () => renderStock()); }
+function editFournisseur(id) { const o = findCached("fournisseurs", id); if (o) editEntity("/api/fournisseurs", FOURN_FIELDS, o, () => renderFournisseurs()); }
 function editST(id) { const o = findCached("sous-traitants", id); if (o) editEntity("/api/sous-traitants", [{ key: "raison_sociale", label: "Raison sociale" }, { key: "specialite", label: "Spécialité" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }], o, () => renderSousTraitants()); }
 function editMod(key, id) { const m = MOD[key]; const o = (caches["mod:" + key] || []).find((x) => x.id === id); if (o) editEntity(m.ep, m.fields, o, () => { if (m.cache) clearCache(m.cache); renderMod(key); }); }
 function companyName() { const c = (window._companies || []).find((x) => String(x.id) === String(activeCompany)); return c ? c.raison_sociale : "Société"; }
@@ -396,13 +396,41 @@ async function renderEmps() {
       <td class="r"><button class="btn sm" onclick="fiche(${e.id})">Fiche</button> <button class="btn sm ghost" onclick="editEmp(${e.id})">✏️</button> <button class="btn sm ghost" onclick="rhDocs(${e.id},'${(e.matricule || "").replace(/'/g, "")}')">📄 Docs</button> <button class="btn sm ghost" onclick="goPaie(${e.id})">Paie</button> <button class="btn sm danger" onclick="delEmp(${e.id})">×</button></td></tr>`; }).join("")}
     </tbody></table></div>`;
 }
-async function addEmp() {
-  const d = await modalForm("Nouveau salarié", [
-    { key: "matricule", label: "Matricule" }, { key: "nom", label: "Nom complet" }, { key: "poste", label: "Poste" }, { key: "cin", label: "CIN" }, { key: "cnss", label: "N° CNSS" },
-    { key: "salaire_base", label: "Salaire de base", type: "number" }, { key: "mois_anciennete", label: "Ancienneté (mois)", type: "number" }, { key: "personnes_charge", label: "Personnes à charge", type: "number" }]);
-  if (!d) return;
-  try { await api("/api/employees", { method: "POST", body: JSON.stringify(d) }); renderEmps(); } catch (e) { alert(e.message); }
+const EMP_CONTRATS = ["", "CDI", "CDD", "ANAPEC", "Intérim", "Essai", "Chantier", "Stage"];
+const EMP_SITFAM = ["", "Célibataire", "Marié(e)", "Divorcé(e)", "Veuf(ve)"];
+const EMP_SEXE = ["", "M", "F"];
+const EMP_KEYS = ["matricule", "nom", "poste", "qualification", "cin", "cnss", "sexe", "date_naissance", "lieu_naissance", "situation_familiale", "personnes_charge", "adresse", "telephone", "email", "type_contrat", "date_embauche", "date_fin_contrat", "salaire_base", "mois_anciennete", "rib", "banque", "cimr", "mutuelle"];
+function empForm(o) {
+  o = o || {}; const v = (k) => (o[k] != null ? String(o[k]).replace(/"/g, "&quot;") : "");
+  const inp = (k, l, t = "text") => `<div class="field"><label>${l}</label><input id="ef-${k}" type="${t}" value="${v(k)}"></div>`;
+  const sel = (k, l, opts) => `<div class="field"><label>${l}</label><select id="ef-${k}">${opts.map((x) => `<option value="${x}" ${v(k) === x ? "selected" : ""}>${x || "—"}</option>`).join("")}</select></div>`;
+  V().innerHTML = `<div class="bar"><div><h1>${o.id ? "Modifier le salarié" : "Nouveau salarié"}</h1><div class="sub">Fiche RH complète — matricule, nom et salaire de base sont obligatoires.</div></div>
+    <div style="display:flex;gap:8px"><button class="btn ghost" onclick="renderEmps()">← Retour</button><button class="btn" onclick="saveEmp(${o.id || 0})">💾 Enregistrer</button></div></div>
+    <div class="card">
+      <div class="colhead">1 · Identité & poste</div>
+      <div class="form">${inp("matricule", "Matricule *")}${inp("nom", "Nom complet *")}${inp("poste", "Poste")}${inp("qualification", "Qualification / Catégorie")}${inp("cin", "CIN")}${inp("cnss", "N° CNSS")}</div>
+      <div class="colhead">2 · État civil</div>
+      <div class="form">${sel("sexe", "Sexe", EMP_SEXE)}${inp("date_naissance", "Date de naissance", "date")}${inp("lieu_naissance", "Lieu de naissance")}${sel("situation_familiale", "Situation familiale", EMP_SITFAM)}${inp("personnes_charge", "Personnes à charge", "number")}</div>
+      <div class="colhead">3 · Coordonnées</div>
+      <div class="form">${inp("adresse", "Adresse")}${inp("telephone", "Téléphone")}${inp("email", "Email")}</div>
+      <div class="colhead">4 · Contrat</div>
+      <div class="form">${sel("type_contrat", "Type de contrat", EMP_CONTRATS)}${inp("date_embauche", "Date d'embauche", "date")}${inp("date_fin_contrat", "Fin de contrat (si CDD)", "date")}${inp("mois_anciennete", "Ancienneté (mois)", "number")}</div>
+      <div class="colhead">5 · Rémunération & paie</div>
+      <div class="form">${inp("salaire_base", "Salaire de base (MAD) *", "number")}${inp("rib", "RIB (24 chiffres)")}${inp("banque", "Banque")}${inp("cimr", "N° / taux CIMR")}${inp("mutuelle", "Mutuelle")}</div>
+      <div class="mactions"><button class="btn ghost" onclick="renderEmps()">Annuler</button><button class="btn" onclick="saveEmp(${o.id || 0})">💾 Enregistrer</button></div>
+    </div>`;
 }
+async function saveEmp(id) {
+  const g = (k) => { const e = el("ef-" + k); return e ? e.value : ""; };
+  const body = {}; EMP_KEYS.forEach((k) => { const val = g(k); if (val !== undefined && val !== "") body[k] = val; });
+  if (!body.matricule || !body.nom || !body.salaire_base) { alert("Matricule, nom et salaire de base sont obligatoires."); return; }
+  try {
+    if (id) await api("/api/employees/" + id, { method: "PUT", body: JSON.stringify(body) });
+    else await api("/api/employees", { method: "POST", body: JSON.stringify(body) });
+    clearCache("employees"); renderEmps();
+  } catch (e) { alert(e.message); }
+}
+function addEmp() { empForm({ type_contrat: "CDI", mois_anciennete: 0, personnes_charge: 0 }); }
 async function delEmp(id) { if (confirm("Désactiver ce salarié ?")) { await api("/api/employees/" + id, { method: "DELETE" }); renderEmps(); } }
 function goPaie(id) { selected = id; show("paie"); }
 
@@ -774,8 +802,11 @@ async function renderStock() {
       <td class="r"><button class="btn sm" onclick="mvtStock(${a.id})">Mouvement</button> <button class="btn sm ghost" onclick="inventaire(${a.id},${a.stock})">Inventaire</button> <button class="btn sm ghost" onclick="editArticle(${a.id})">✏️</button></td></tr>`).join("")}
     </tbody></table></div>`;
 }
+const CLIENT_FIELDS = [{ key: "raison_sociale", label: "Raison sociale / Nom" }, { key: "type", label: "Type", type: "select", options: opt(["prive", "public", "promoteur", "particulier"]) }, { key: "ice", label: "ICE" }, { key: "rc", label: "RC" }, { key: "if_fiscal", label: "Identifiant fiscal (IF)" }, { key: "patente", label: "Patente / TP" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }, { key: "email", label: "Email" }, { key: "adresse", label: "Adresse" }, { key: "ville", label: "Ville" }];
+const FOURN_FIELDS = [{ key: "raison_sociale", label: "Raison sociale" }, { key: "famille", label: "Famille", type: "select", options: opt(["materiaux", "location", "transport", "services", "outillage", "carburant", "autre"]) }, { key: "ice", label: "ICE" }, { key: "rc", label: "RC" }, { key: "if_fiscal", label: "Identifiant fiscal (IF)" }, { key: "patente", label: "Patente / TP" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }, { key: "email", label: "Email" }, { key: "adresse", label: "Adresse" }, { key: "ville", label: "Ville" }, { key: "rib", label: "RIB" }, { key: "banque", label: "Banque" }, { key: "conditions_paiement", label: "Conditions de paiement" }, { key: "delai_livraison", label: "Délai livraison (j)", type: "number" }];
+const ARTICLE_FIELDS = [{ key: "reference", label: "Référence" }, { key: "designation", label: "Désignation" }, { key: "categorie", label: "Catégorie", type: "select", options: opt(["gros_oeuvre", "second_oeuvre", "electricite", "plomberie", "peinture", "quincaillerie", "consommable", "epi", "autre"]) }, { key: "unite", label: "Unité (u, ml, m2, m3, kg, sac, ...)" }, { key: "emplacement", label: "Emplacement / Dépôt" }, { key: "fournisseur", label: "Fournisseur principal" }, { key: "stock", label: "Stock initial", type: "number" }, { key: "seuil", label: "Seuil d'alerte", type: "number" }, { key: "prix_unitaire", label: "Prix unitaire (CMUP initial)", type: "number" }, { key: "tva_taux", label: "TVA (%)", type: "number" }];
 async function addArticle() {
-  const d = await modalForm("Nouvel article", [{ key: "reference", label: "Référence" }, { key: "designation", label: "Désignation" }, { key: "unite", label: "Unité" }, { key: "stock", label: "Stock initial", type: "number" }, { key: "seuil", label: "Seuil d'alerte", type: "number" }, { key: "prix_unitaire", label: "Prix unitaire (CMUP initial)", type: "number" }]);
+  const d = await modalForm("Nouvel article", ARTICLE_FIELDS);
   if (!d) return; if (d.prix_unitaire) d.cmup = d.prix_unitaire; await api("/api/articles", { method: "POST", body: JSON.stringify(d) }); renderStock();
 }
 async function mvtStock(id) {
@@ -947,9 +978,13 @@ async function addIncident() {
     { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" },
     { key: "type", label: "Type", type: "select", options: opt(["incident", "accident", "presqu_accident"]) },
     { key: "gravite", label: "Gravité", type: "select", options: opt(["faible", "moyenne", "grave"]) },
-    { key: "employee_id", label: "Blessé (si accident)", type: "select", rel: "employees" },
+    { key: "employee_id", label: "Victime (si accident)", type: "select", rel: "employees" },
+    { key: "victime", label: "Nom victime (si externe)" },
+    { key: "type_accident", label: "Nature (chute, coupure, ...)" },
+    { key: "lieu", label: "Lieu précis sur le chantier" }, { key: "heure", label: "Heure" },
     { key: "jours_arret", label: "Jours d'arrêt", type: "number" },
-    { key: "description", label: "Description" }, { key: "mesures", label: "Mesures correctives" },
+    { key: "temoins", label: "Témoins" },
+    { key: "description", label: "Description", type: "textarea" }, { key: "mesures", label: "Mesures correctives", type: "textarea" },
     { key: "date_incident", label: "Date", type: "date" }]);
   if (!d) return; await api("/api/incidents", { method: "POST", body: JSON.stringify(d) }); renderSecurite();
 }
@@ -957,8 +992,10 @@ async function addControle() {
   const d = await modalForm("Contrôle de sécurité", [
     { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" },
     { key: "type", label: "Type de contrôle" },
+    { key: "domaine", label: "Domaine (échafaudage, EPI, élec, ...)" },
     { key: "conforme", label: "Conforme", type: "select", options: [{ value: "true", label: "Oui" }, { value: "false", label: "Non" }] },
-    { key: "controleur", label: "Contrôleur" }, { key: "observations", label: "Observations" },
+    { key: "controleur", label: "Contrôleur" }, { key: "observations", label: "Observations", type: "textarea" },
+    { key: "actions_correctives", label: "Actions correctives", type: "textarea" }, { key: "echeance", label: "Échéance", type: "date" },
     { key: "date_controle", label: "Date", type: "date" }]);
   if (!d) return; await api("/api/controles", { method: "POST", body: JSON.stringify(d) }); renderSecurite();
 }
@@ -1025,13 +1062,13 @@ async function renderClients() {
     </tbody></table></div>`;
 }
 async function addClient() {
-  const d = await modalForm("Nouveau client", [{ key: "raison_sociale", label: "Raison sociale / Nom" }, { key: "ice", label: "ICE" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }, { key: "email", label: "Email" }, { key: "adresse", label: "Adresse" }, { key: "ville", label: "Ville" }]);
+  const d = await modalForm("Nouveau client", CLIENT_FIELDS);
   if (!d) return;
   try { await api("/api/clients", { method: "POST", body: JSON.stringify(d) }); renderClients(); } catch (e) { alert(e.message); }
 }
 function editClient(id) {
   const o = findCached("clients", id);
-  if (o) editEntity("/api/clients", [{ key: "raison_sociale", label: "Raison sociale / Nom" }, { key: "ice", label: "ICE" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }, { key: "email", label: "Email" }, { key: "adresse", label: "Adresse" }, { key: "ville", label: "Ville" }], o, () => renderClients());
+  if (o) editEntity("/api/clients", CLIENT_FIELDS, o, () => renderClients());
 }
 
 /* ===================== Fournisseurs ===================== */
@@ -1044,7 +1081,7 @@ async function renderFournisseurs() {
     </tbody></table></div>`;
 }
 async function addFournisseur() {
-  const d = await modalForm("Nouveau fournisseur", [{ key: "raison_sociale", label: "Raison sociale" }, { key: "ice", label: "ICE" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }, { key: "email", label: "Email" }, { key: "conditions_paiement", label: "Conditions de paiement" }, { key: "delai_livraison", label: "Délai livraison (j)", type: "number" }]);
+  const d = await modalForm("Nouveau fournisseur", FOURN_FIELDS);
   if (!d) return; await api("/api/fournisseurs", { method: "POST", body: JSON.stringify(d) }); renderFournisseurs();
 }
 async function ficheFour(id) {
@@ -1142,7 +1179,7 @@ const MOD = {
     fields: [{ key: "code", label: "Code" }, { key: "nom", label: "Nom" }, { key: "client", label: "Client" }, { key: "ville", label: "Ville" }, { key: "budget_prevu", label: "Budget prévu", type: "number" }, { key: "date_debut", label: "Début", type: "date" }, { key: "statut", label: "Statut", type: "select", options: opt(["prospect", "en_cours", "suspendu", "clos"]) }] },
   incidents: { title: "Sécurité chantier", ep: "/api/incidents",
     cols: [["date_incident", "Date"], ["chantier_id", "Chantier", "chantier"], ["type", "Type"], ["gravite", "Gravité", "pill"], ["statut", "Statut", "pill"]],
-    fields: [{ key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" }, { key: "type", label: "Type", type: "select", options: opt(["incident", "accident", "presqu_accident"]) }, { key: "gravite", label: "Gravité", type: "select", options: opt(["faible", "moyenne", "grave"]) }, { key: "description", label: "Description" }, { key: "date_incident", label: "Date", type: "date" }] },
+    fields: [{ key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" }, { key: "type", label: "Type", type: "select", options: opt(["incident", "accident", "presqu_accident"]) }, { key: "gravite", label: "Gravité", type: "select", options: opt(["faible", "moyenne", "grave"]) }, { key: "type_accident", label: "Nature" }, { key: "lieu", label: "Lieu" }, { key: "heure", label: "Heure" }, { key: "jours_arret", label: "Jours d'arrêt", type: "number" }, { key: "description", label: "Description", type: "textarea" }, { key: "mesures", label: "Mesures correctives", type: "textarea" }, { key: "date_incident", label: "Date", type: "date" }] },
   documents: { title: "Documents (GED)", ep: "/api/documents",
     cols: [["nom", "Nom"], ["type", "Type", "pill"], ["chantier_id", "Chantier", "chantier"], ["version", "Version"]],
     fields: [{ key: "nom", label: "Nom" }, { key: "type", label: "Type", type: "select", options: opt(["contrat", "plan", "pv", "facture", "attachement"]) }, { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" }, { key: "url", label: "Lien / URL" }] },
@@ -1151,10 +1188,10 @@ const MOD = {
     fields: [{ key: "numero", label: "N°" }, { key: "client", label: "Client" }, { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" }, { key: "type", label: "Type", type: "select", options: opt(["facture", "situation", "acompte", "decompte"]) }, { key: "montant_ht", label: "Montant HT", type: "number" }, { key: "montant_ttc", label: "Montant TTC", type: "number" }, { key: "statut", label: "Statut", type: "select", options: opt(["brouillon", "emise", "payee"]) }] },
   "demandes-achat": { title: "Demandes d'achat", ep: "/api/demandes-achat",
     cols: [["objet", "Objet"], ["chantier_id", "Chantier", "chantier"], ["statut", "Statut", "pill"]],
-    fields: [{ key: "objet", label: "Objet" }, { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" }, { key: "statut", label: "Statut", type: "select", options: opt(["demande", "approuvee", "commandee", "recue"]) }] },
+    fields: [{ key: "objet", label: "Objet" }, { key: "article", label: "Article / matériau" }, { key: "quantite", label: "Quantité", type: "number" }, { key: "unite", label: "Unité" }, { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" }, { key: "demandeur", label: "Demandeur" }, { key: "date_demande", label: "Date demande", type: "date" }, { key: "date_besoin", label: "Date besoin", type: "date" }, { key: "priorite", label: "Priorité", type: "select", options: opt(["normale", "urgente", "critique"]) }, { key: "observations", label: "Observations", type: "textarea" }, { key: "statut", label: "Statut", type: "select", options: opt(["demande", "approuvee", "commandee", "recue"]) }] },
   fournisseurs: { title: "Fournisseurs", ep: "/api/fournisseurs", cache: "fournisseurs",
     cols: [["raison_sociale", "Raison sociale"], ["ice", "ICE", "mono"], ["contact", "Contact"], ["telephone", "Tél"], ["email", "Email"]],
-    fields: [{ key: "raison_sociale", label: "Raison sociale" }, { key: "ice", label: "ICE" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }, { key: "email", label: "Email" }] },
+    fields: FOURN_FIELDS },
   "sous-traitants": { title: "Sous-traitants", ep: "/api/sous-traitants", cache: "sous-traitants",
     cols: [["raison_sociale", "Raison sociale"], ["specialite", "Spécialité", "pill"], ["contact", "Contact"], ["telephone", "Tél"]],
     fields: [{ key: "raison_sociale", label: "Raison sociale" }, { key: "specialite", label: "Spécialité" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }] },
@@ -1277,8 +1314,8 @@ async function renderPointage() {
     <div style="display:flex;gap:6px"><button class="btn sm ghost" onclick="shiftPt(-1)">← Mois</button><button class="btn sm ghost" onclick="shiftPt(1)">Mois →</button></div></div>
   <div class="card" style="margin-bottom:14px"><div class="colhead">Saisir un pointage</div>
     <div class="form" style="grid-template-columns:repeat(5,1fr)">
-      <div class="field"><label>Salarié</label><select id="pt-emp">${emps.map((e) => `<option value="${e.id}">${e.nom}</option>`).join("")}</select></div>
-      <div class="field"><label>Chantier</label><select id="pt-ch">${chs.map((c) => `<option value="${c.id}">${c.code} — ${c.nom}</option>`).join("")}</select></div>
+      <div class="field"><label>Salarié</label><select id="pt-emp"><option value="">— choisir —</option>${emps.map((e) => `<option value="${e.id}">${e.nom}</option>`).join("")}</select></div>
+      <div class="field"><label>Chantier</label><select id="pt-ch"><option value="">— aucun —</option>${chs.map((c) => `<option value="${c.id}">${c.code} — ${c.nom}</option>`).join("")}</select></div>
       <div class="field"><label>Date</label><input type="date" id="pt-date" value="${new Date().toISOString().slice(0, 10)}"></div>
       <div class="field"><label>Heures</label><input type="number" id="pt-h" value="8"></div>
       <div class="field"><label>H. sup.</label><input type="number" id="pt-hs" value="0"></div>
@@ -1298,7 +1335,10 @@ async function renderPointage() {
 }
 function shiftPt(d) { let m = ptPeriod.mois + d, y = ptPeriod.annee; if (m < 1) { m = 12; y--; } if (m > 12) { m = 1; y++; } ptPeriod = { annee: y, mois: m }; renderPointage(); }
 async function savePointage() {
-  const body = { employee_id: +el("pt-emp").value, chantier_id: +el("pt-ch").value, date_jour: el("pt-date").value, heures: +el("pt-h").value || 0, heures_sup: +el("pt-hs").value || 0 };
+  const emp = el("pt-emp").value, ch = el("pt-ch").value;
+  if (!emp) { alert("Sélectionnez un salarié. Ajoutez d'abord vos salariés dans le module « Salariés »."); return; }
+  const body = { employee_id: +emp, date_jour: el("pt-date").value, heures: +el("pt-h").value || 0, heures_sup: +el("pt-hs").value || 0 };
+  if (ch) body.chantier_id = +ch;
   try { await api("/api/pointages", { method: "POST", body: JSON.stringify(body) }); renderPointage(); } catch (e) { alert(e.message); }
 }
 async function delPointage(id) { if (confirm("Supprimer ce pointage ?")) { await api("/api/pointages/" + id, { method: "DELETE" }); renderPointage(); } }
@@ -1366,7 +1406,7 @@ async function addPaiement() {
 async function delPaiement(id) { if (confirm("Supprimer ce mouvement ?")) { await api("/api/paiements/" + id, { method: "DELETE" }); renderTresorerie(); } }
 
 /* ===================== Parc matériel ===================== */
-const materielFields = () => [{ key: "code", label: "Code" }, { key: "designation", label: "Désignation" }, { key: "type", label: "Type", type: "select", options: opt(["engin", "outillage", "vehicule"]) }, { key: "etat", label: "État", type: "select", options: opt(["disponible", "en_service", "maintenance", "hs"]) }, { key: "valeur_acquisition", label: "Valeur (MAD)", type: "number" }, { key: "date_acquisition", label: "Date d'acquisition", type: "date" }];
+const materielFields = () => [{ key: "code", label: "Code" }, { key: "designation", label: "Désignation" }, { key: "type", label: "Type", type: "select", options: opt(["engin", "outillage", "vehicule"]) }, { key: "etat", label: "État", type: "select", options: opt(["disponible", "en_service", "maintenance", "hs"]) }, { key: "marque", label: "Marque" }, { key: "modele", label: "Modèle" }, { key: "immatriculation", label: "Immatriculation" }, { key: "num_serie", label: "N° de série" }, { key: "fournisseur", label: "Fournisseur" }, { key: "valeur_acquisition", label: "Valeur d'acquisition (MAD)", type: "number" }, { key: "date_acquisition", label: "Date d'acquisition", type: "date" }, { key: "date_mise_service", label: "Date de mise en service", type: "date" }, { key: "compteur", label: "Compteur (h ou km)", type: "number" }, { key: "unite_compteur", label: "Unité compteur (h / km)" }, { key: "assurance_compagnie", label: "Assurance — compagnie" }, { key: "assurance_police", label: "Assurance — N° police" }, { key: "date_assurance", label: "Échéance assurance", type: "date" }, { key: "prochaine_maintenance", label: "Prochaine maintenance", type: "date" }, { key: "observations", label: "Observations", type: "textarea" }];
 async function renderMateriel() {
   await getCache("chantiers");
   const chs = caches.chantiers || [];

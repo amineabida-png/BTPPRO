@@ -401,6 +401,74 @@ ALTER TABLE soustraitant_contrat ADD COLUMN IF NOT EXISTS date_signature date;
 ALTER TABLE soustraitant_contrat ADD COLUMN IF NOT EXISTS company_id int REFERENCES company(id);
 ALTER TABLE facture ADD COLUMN IF NOT EXISTS ref_facture_id int;
 ALTER TABLE facture ADD COLUMN IF NOT EXISTS motif text;
+-- ===== Enrichissements modules (après création des tables) =====
+-- Salarié (RH complet)
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS date_naissance date;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS lieu_naissance text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS sexe text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS situation_familiale text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS adresse text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS telephone text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS email text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS type_contrat text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS date_fin_contrat date;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS qualification text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS rib text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS banque text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS cimr text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS mutuelle text;
+-- Parc matériel
+ALTER TABLE materiel ADD COLUMN IF NOT EXISTS marque text;
+ALTER TABLE materiel ADD COLUMN IF NOT EXISTS modele text;
+ALTER TABLE materiel ADD COLUMN IF NOT EXISTS immatriculation text;
+ALTER TABLE materiel ADD COLUMN IF NOT EXISTS num_serie text;
+ALTER TABLE materiel ADD COLUMN IF NOT EXISTS fournisseur text;
+ALTER TABLE materiel ADD COLUMN IF NOT EXISTS date_mise_service date;
+ALTER TABLE materiel ADD COLUMN IF NOT EXISTS compteur numeric(12,2);
+ALTER TABLE materiel ADD COLUMN IF NOT EXISTS unite_compteur text;
+ALTER TABLE materiel ADD COLUMN IF NOT EXISTS assurance_compagnie text;
+ALTER TABLE materiel ADD COLUMN IF NOT EXISTS assurance_police text;
+ALTER TABLE materiel ADD COLUMN IF NOT EXISTS date_assurance date;
+ALTER TABLE materiel ADD COLUMN IF NOT EXISTS prochaine_maintenance date;
+ALTER TABLE materiel ADD COLUMN IF NOT EXISTS observations text;
+-- Fournisseur
+ALTER TABLE fournisseur ADD COLUMN IF NOT EXISTS rc text;
+ALTER TABLE fournisseur ADD COLUMN IF NOT EXISTS if_fiscal text;
+ALTER TABLE fournisseur ADD COLUMN IF NOT EXISTS patente text;
+ALTER TABLE fournisseur ADD COLUMN IF NOT EXISTS adresse text;
+ALTER TABLE fournisseur ADD COLUMN IF NOT EXISTS ville text;
+ALTER TABLE fournisseur ADD COLUMN IF NOT EXISTS rib text;
+ALTER TABLE fournisseur ADD COLUMN IF NOT EXISTS banque text;
+ALTER TABLE fournisseur ADD COLUMN IF NOT EXISTS famille text;
+-- Client
+ALTER TABLE client ADD COLUMN IF NOT EXISTS rc text;
+ALTER TABLE client ADD COLUMN IF NOT EXISTS if_fiscal text;
+ALTER TABLE client ADD COLUMN IF NOT EXISTS patente text;
+ALTER TABLE client ADD COLUMN IF NOT EXISTS type text;
+-- Article / Stock
+ALTER TABLE article ADD COLUMN IF NOT EXISTS categorie text;
+ALTER TABLE article ADD COLUMN IF NOT EXISTS emplacement text;
+ALTER TABLE article ADD COLUMN IF NOT EXISTS fournisseur text;
+ALTER TABLE article ADD COLUMN IF NOT EXISTS tva_taux numeric(5,2);
+-- Demande d'achat
+ALTER TABLE demande_achat ADD COLUMN IF NOT EXISTS demandeur text;
+ALTER TABLE demande_achat ADD COLUMN IF NOT EXISTS date_demande date;
+ALTER TABLE demande_achat ADD COLUMN IF NOT EXISTS date_besoin date;
+ALTER TABLE demande_achat ADD COLUMN IF NOT EXISTS priorite text;
+ALTER TABLE demande_achat ADD COLUMN IF NOT EXISTS quantite numeric(12,2);
+ALTER TABLE demande_achat ADD COLUMN IF NOT EXISTS unite text;
+ALTER TABLE demande_achat ADD COLUMN IF NOT EXISTS article text;
+ALTER TABLE demande_achat ADD COLUMN IF NOT EXISTS observations text;
+-- Incident sécurité
+ALTER TABLE incident ADD COLUMN IF NOT EXISTS lieu text;
+ALTER TABLE incident ADD COLUMN IF NOT EXISTS heure text;
+ALTER TABLE incident ADD COLUMN IF NOT EXISTS victime text;
+ALTER TABLE incident ADD COLUMN IF NOT EXISTS temoins text;
+ALTER TABLE incident ADD COLUMN IF NOT EXISTS type_accident text;
+-- Contrôle sécurité
+ALTER TABLE controle_securite ADD COLUMN IF NOT EXISTS domaine text;
+ALTER TABLE controle_securite ADD COLUMN IF NOT EXISTS actions_correctives text;
+ALTER TABLE controle_securite ADD COLUMN IF NOT EXISTS echeance date;
 `;
 
 async function seedIfEmpty(table, fn) {
