@@ -131,7 +131,7 @@ const VIEW_DOMAIN = {
   articles: "stock", "demandes-achat": "achats", "bons-commande": "achats", fournisseurs: "tiers", clients: "tiers", "sous-traitants": "tiers",
   integrations: null, users: "admin", societe: "admin",
   planning: "chantiers", pointage: "chantiers", tresorerie: "facturation",
-  materiel: "chantiers", rapports: "chantiers", alertes: null,
+  materiel: "chantiers", rapports: "chantiers", "pv-reunions": "chantiers", alertes: null,
   compta: "rentabilite", journal: "admin", onboarding: "admin", bordereaux: "devis", superadmin: "admin",
 };
 let myPerms = ["*"];
@@ -158,7 +158,7 @@ const ROUTES = {
   documents: renderGED, fournisseurs: renderFournisseurs, clients: renderClients, "sous-traitants": renderSousTraitants,
   integrations: renderIntegrations, societe: renderSociete,
   planning: renderPlanning, pointage: renderPointage, tresorerie: renderTresorerie,
-  materiel: renderMateriel, rapports: renderRapports, alertes: renderAlertes,
+  materiel: renderMateriel, rapports: renderRapports, "pv-reunions": renderPVReunions, alertes: renderAlertes,
   compta: renderCompta, journal: renderActivite, onboarding: renderOnboarding, bordereaux: renderBordereaux, superadmin: renderSuperAdmin,
 };
 async function show(v) {
@@ -1455,13 +1455,34 @@ async function renderRapports() {
 function newRapport() {
   const chs = caches.chantiers || []; rapPhotos = [];
   el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>Nouveau rapport de chantier</h3>
+    <div class="colhead">En-tête</div>
     <div class="mform">
-      <div class="field"><label>Chantier</label><select id="rp-ch">${chs.map((c) => `<option value="${c.id}">${c.code} — ${c.nom}</option>`).join("")}</select></div>
+      <div class="field"><label>Chantier</label><select id="rp-ch"><option value="">— choisir —</option>${chs.map((c) => `<option value="${c.id}">${c.code} — ${c.nom}</option>`).join("")}</select></div>
       <div class="field"><label>Date</label><input type="date" id="rp-date" value="${new Date().toISOString().slice(0, 10)}"></div>
+      <div class="field"><label>N° rapport (auto si vide)</label><input id="rp-num"></div>
+      <div class="field"><label>Rédigé par</label><input id="rp-redige" placeholder="Chef de chantier / conducteur"></div>
+    </div>
+    <div class="colhead" style="margin-top:10px">Conditions & effectifs</div>
+    <div class="mform">
       <div class="field"><label>Météo</label><input id="rp-meteo" placeholder="Ensoleillé, pluie…"></div>
-      <div class="field"><label>Effectif présent</label><input type="number" id="rp-eff" value="0"></div>
-      <div class="field" style="grid-column:1/-1"><label>Avancement</label><input id="rp-av"></div>
-      <div class="field" style="grid-column:1/-1"><label>Observations</label><input id="rp-obs"></div>
+      <div class="field"><label>Température</label><input id="rp-temp" placeholder="ex : 28 °C"></div>
+      <div class="field"><label>Heures d'arrêt (météo/pannes)</label><input type="number" id="rp-arret" value="0"></div>
+      <div class="field"><label>Effectif propre présent</label><input type="number" id="rp-eff" value="0"></div>
+      <div class="field"><label>Effectif sous-traitants</label><input type="number" id="rp-effst" value="0"></div>
+    </div>
+    <div class="colhead" style="margin-top:10px">Activité du jour</div>
+    <div class="mform">
+      <div class="field" style="grid-column:1/-1"><label>Travaux réalisés</label><textarea id="rp-trav" rows="2" class="ta"></textarea></div>
+      <div class="field" style="grid-column:1/-1"><label>Avancement</label><textarea id="rp-av" rows="2" class="ta"></textarea></div>
+      <div class="field" style="grid-column:1/-1"><label>Matériel / engins présents</label><textarea id="rp-mat" rows="2" class="ta"></textarea></div>
+      <div class="field" style="grid-column:1/-1"><label>Approvisionnements / livraisons</label><textarea id="rp-appro" rows="2" class="ta"></textarea></div>
+    </div>
+    <div class="colhead" style="margin-top:10px">Suivi & traçabilité</div>
+    <div class="mform">
+      <div class="field" style="grid-column:1/-1"><label>Incidents / aléas</label><textarea id="rp-inc" rows="2" class="ta"></textarea></div>
+      <div class="field" style="grid-column:1/-1"><label>Visiteurs (MOA / MOE / BET / contrôle)</label><textarea id="rp-vis" rows="2" class="ta"></textarea></div>
+      <div class="field" style="grid-column:1/-1"><label>Instructions / décisions</label><textarea id="rp-instr" rows="2" class="ta"></textarea></div>
+      <div class="field" style="grid-column:1/-1"><label>Observations</label><textarea id="rp-obs" rows="2" class="ta"></textarea></div>
     </div>
     <div class="colhead" style="margin-top:10px">Photos (jusqu'à 12)</div>
     <input type="file" accept="image/*" multiple onchange="addRapPhotos(this)">
@@ -1479,19 +1500,118 @@ function addRapPhotos(input) {
 }
 function drawRapPhotos() { el("rp-photos").innerHTML = rapPhotos.map((p, i) => `<div style="position:relative"><img src="${p.data}" style="width:90px;height:70px;object-fit:cover;border-radius:8px;border:1px solid var(--line)"><button class="btn sm danger" style="position:absolute;top:-6px;right:-6px;padding:1px 6px" onclick="rapPhotos.splice(${i},1);drawRapPhotos()">×</button></div>`).join(""); }
 async function saveRapport() {
-  const body = { chantier_id: +el("rp-ch").value, date_rapport: el("rp-date").value, meteo: el("rp-meteo").value, effectif: +el("rp-eff").value || 0, avancement: el("rp-av").value, observations: el("rp-obs").value, photos: rapPhotos };
+  const g = (id) => { const e = el(id); return e ? e.value : ""; };
+  if (!g("rp-ch")) { alert("Sélectionnez un chantier."); return; }
+  const body = {
+    chantier_id: +g("rp-ch"), date_rapport: g("rp-date"), numero: g("rp-num"), redige_par: g("rp-redige"),
+    meteo: g("rp-meteo"), temperature: g("rp-temp"), heures_arret: +g("rp-arret") || 0,
+    effectif: +g("rp-eff") || 0, effectif_st: +g("rp-effst") || 0,
+    travaux_realises: g("rp-trav"), avancement: g("rp-av"), materiel_present: g("rp-mat"), approvisionnements: g("rp-appro"),
+    incidents: g("rp-inc"), visiteurs: g("rp-vis"), instructions: g("rp-instr"), observations: g("rp-obs"), photos: rapPhotos,
+  };
   try { await api("/api/rapports", { method: "POST", body: JSON.stringify(body) }); el("modal-root").innerHTML = ""; renderRapports(); } catch (e) { alert(e.message); }
 }
 async function viewRapport(id) {
   const r = await api("/api/rapports/" + id);
-  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>Rapport — ${new Date(r.date_rapport).toLocaleDateString("fr-FR")}</h3>
-    <div class="muted" style="margin-bottom:8px">Météo : ${r.meteo || "—"} · Effectif : ${r.effectif || 0}</div>
-    <div><b>Avancement :</b> ${r.avancement || "—"}</div><div style="margin:6px 0"><b>Observations :</b> ${r.observations || "—"}</div>
+  const row = (l, v) => v ? `<div style="margin:5px 0"><b>${l} :</b> ${v}</div>` : "";
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>Rapport — ${new Date(r.date_rapport).toLocaleDateString("fr-FR")}${r.numero ? " · " + r.numero : ""}</h3>
+    <div class="muted" style="margin-bottom:8px">Météo : ${r.meteo || "—"}${r.temperature ? " · " + r.temperature : ""}${r.heures_arret ? " · Arrêt " + r.heures_arret + " h" : ""} · Effectif : ${r.effectif || 0}${r.effectif_st ? " (+" + r.effectif_st + " ST)" : ""}${r.redige_par ? " · " + r.redige_par : ""}</div>
+    ${row("Travaux réalisés", r.travaux_realises)}${row("Avancement", r.avancement)}${row("Matériel présent", r.materiel_present)}${row("Approvisionnements", r.approvisionnements)}${row("Incidents / aléas", r.incidents)}${row("Visiteurs", r.visiteurs)}${row("Instructions", r.instructions)}${row("Observations", r.observations)}
     <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">${(r.photos || []).map((p) => `<img src="${p.data}" style="width:150px;height:115px;object-fit:cover;border-radius:8px;border:1px solid var(--line)">`).join("") || '<span class="muted">Aucune photo.</span>'}</div>
     <div class="mactions"><button class="btn ghost" onclick="el('modal-root').innerHTML=''">Fermer</button><button class="btn" onclick="downloadDoc('/api/rapports/${id}/pdf','rapport-${id}.pdf')">📄 PDF</button></div>
     </div></div>`;
 }
 async function delRapport(id) { if (confirm("Supprimer ce rapport ?")) { await api("/api/rapports/" + id, { method: "DELETE" }); renderRapports(); } }
+
+/* ===================== PV de réunion de chantier ===================== */
+let pvPoints = [];
+async function renderPVReunions() {
+  await getCache("chantiers");
+  const list = await api("/api/pv-reunions");
+  V().innerHTML = `<div class="bar"><div><h1>PV de réunion de chantier</h1><div class="sub">Comptes rendus de réunion · décisions, actions, diffusion · export PDF</div></div>
+    <button class="btn sm" onclick="newPV()">+ PV de réunion</button></div>
+    <div class="card"><table><thead><tr><th>Date</th><th>N°</th><th>Chantier</th><th>Objet</th><th class="r">Points</th><th></th></tr></thead><tbody>
+  ${list.length ? list.map((p) => `<tr><td>${new Date(p.date_reunion).toLocaleDateString("fr-FR")}</td><td class="mono">${p.numero || "—"}</td><td>${p.chantier_code ? p.chantier_code + " — " + (p.chantier_nom || "") : "—"}</td><td>${p.objet || ""}</td><td class="r">${p.nb_points || 0}</td>
+    <td class="r"><button class="btn sm ghost" onclick="viewPV(${p.id})">Voir</button> <button class="btn sm ghost" onclick="openDoc('/api/pv-reunions/${p.id}/pdf')">📄 PDF</button> <button class="btn sm danger" onclick="delPV(${p.id})">×</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucun PV.</td></tr>`}
+    </tbody></table></div>`;
+}
+function pvPointsEditor() {
+  return `<table style="margin-top:6px"><thead><tr><th style="width:40px">N°</th><th>Point / Décision</th><th style="width:140px">Responsable</th><th style="width:130px">Échéance</th><th style="width:110px">Statut</th><th></th></tr></thead><tbody id="pv-points">
+    ${pvPoints.map((pt, i) => `<tr>
+      <td class="mono">${i + 1}</td>
+      <td><input value="${(pt.description || "").replace(/"/g, "&quot;")}" oninput="pvPoints[${i}].description=this.value" style="width:100%"></td>
+      <td><input value="${(pt.responsable || "").replace(/"/g, "&quot;")}" oninput="pvPoints[${i}].responsable=this.value" style="width:100%"></td>
+      <td><input type="date" value="${pt.echeance || ""}" oninput="pvPoints[${i}].echeance=this.value" style="width:100%"></td>
+      <td><select onchange="pvPoints[${i}].statut=this.value" style="width:100%">${["ouvert", "en_cours", "soldé"].map((s) => `<option value="${s}" ${pt.statut === s ? "selected" : ""}>${s}</option>`).join("")}</select></td>
+      <td><button class="btn sm danger" onclick="pvPoints.splice(${i},1);redrawPVPoints()">×</button></td></tr>`).join("")}
+  </tbody></table>
+  <button class="btn sm ghost" style="margin-top:6px" onclick="pvPoints.push({description:'',responsable:'',echeance:'',statut:'ouvert'});redrawPVPoints()">+ Ajouter un point</button>`;
+}
+function redrawPVPoints() { el("pv-points-wrap").innerHTML = pvPointsEditor(); }
+function newPV() {
+  const chs = caches.chantiers || []; pvPoints = [{ description: "", responsable: "", echeance: "", statut: "ouvert" }];
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>Nouveau PV de réunion de chantier</h3>
+    <div class="colhead">Informations générales</div>
+    <div class="mform">
+      <div class="field"><label>Chantier</label><select id="pv-ch"><option value="">— choisir —</option>${chs.map((c) => `<option value="${c.id}">${c.code} — ${c.nom}</option>`).join("")}</select></div>
+      <div class="field"><label>N° de PV (auto si vide)</label><input id="pv-num"></div>
+      <div class="field"><label>Date de réunion</label><input type="date" id="pv-date" value="${new Date().toISOString().slice(0, 10)}"></div>
+      <div class="field"><label>Heure</label><input id="pv-heure" placeholder="ex : 10h00"></div>
+      <div class="field"><label>Lieu de réunion</label><input id="pv-lieu" placeholder="Bureau de chantier"></div>
+      <div class="field" style="grid-column:1/-1"><label>Objet / Ordre du jour</label><input id="pv-objet"></div>
+      <div class="field"><label>Maître d'ouvrage</label><input id="pv-moa"></div>
+      <div class="field"><label>Maître d'œuvre</label><input id="pv-moe"></div>
+      <div class="field"><label>Rédacteur</label><input id="pv-redacteur" placeholder="Architecte / conducteur"></div>
+    </div>
+    <div class="colhead" style="margin-top:10px">Participants</div>
+    <div class="mform">
+      <div class="field" style="grid-column:1/-1"><label>Présents (nom · organisme/rôle)</label><textarea id="pv-part" rows="2" class="ta"></textarea></div>
+      <div class="field" style="grid-column:1/-1"><label>Absents / excusés</label><textarea id="pv-abs" rows="1" class="ta"></textarea></div>
+      <div class="field" style="grid-column:1/-1"><label>Diffusion</label><textarea id="pv-diff" rows="1" class="ta"></textarea></div>
+    </div>
+    <div class="colhead" style="margin-top:10px">Avancement</div>
+    <div class="mform"><div class="field" style="grid-column:1/-1"><label>Avancement des travaux (par lot/corps d'état)</label><textarea id="pv-av" rows="2" class="ta"></textarea></div></div>
+    <div class="colhead" style="margin-top:10px">Points abordés & décisions</div>
+    <div id="pv-points-wrap">${pvPointsEditor()}</div>
+    <div class="colhead" style="margin-top:10px">Sécurité, divers & suite</div>
+    <div class="mform">
+      <div class="field" style="grid-column:1/-1"><label>Sécurité / HSE</label><textarea id="pv-sec" rows="1" class="ta"></textarea></div>
+      <div class="field" style="grid-column:1/-1"><label>Questions diverses</label><textarea id="pv-div" rows="1" class="ta"></textarea></div>
+      <div class="field" style="grid-column:1/-1"><label>Observations</label><textarea id="pv-obs" rows="1" class="ta"></textarea></div>
+      <div class="field"><label>Prochaine réunion — date</label><input type="date" id="pv-pdate"></div>
+      <div class="field"><label>Prochaine — heure</label><input id="pv-pheure"></div>
+      <div class="field"><label>Prochaine — lieu</label><input id="pv-plieu"></div>
+      <div class="field"><label>Délai de contestation (jours)</label><input type="number" id="pv-delai" value="8"></div>
+    </div>
+    <div class="mactions"><button class="btn ghost" onclick="el('modal-root').innerHTML=''">Annuler</button><button class="btn" onclick="savePV()">Enregistrer</button></div>
+    </div></div>`;
+}
+async function savePV() {
+  const g = (id) => { const e = el(id); return e ? e.value : ""; };
+  if (!g("pv-ch")) { alert("Sélectionnez un chantier."); return; }
+  const body = {
+    chantier_id: +g("pv-ch"), numero: g("pv-num"), date_reunion: g("pv-date"), heure: g("pv-heure"), lieu: g("pv-lieu"), objet: g("pv-objet"),
+    maitre_ouvrage: g("pv-moa"), maitre_oeuvre: g("pv-moe"), redacteur: g("pv-redacteur"),
+    participants: g("pv-part"), absents: g("pv-abs"), diffusion: g("pv-diff"), avancement: g("pv-av"),
+    securite: g("pv-sec"), divers: g("pv-div"), observations: g("pv-obs"),
+    prochaine_date: g("pv-pdate"), prochaine_heure: g("pv-pheure"), prochaine_lieu: g("pv-plieu"), delai_contestation: +g("pv-delai") || 8,
+    points: pvPoints.filter((p) => p.description || p.responsable),
+  };
+  try { await api("/api/pv-reunions", { method: "POST", body: JSON.stringify(body) }); el("modal-root").innerHTML = ""; renderPVReunions(); } catch (e) { alert(e.message); }
+}
+async function viewPV(id) {
+  const p = await api("/api/pv-reunions/" + id);
+  const row = (l, v) => v ? `<div style="margin:5px 0"><b>${l} :</b> ${v}</div>` : "";
+  const pts = (p.points || []).length ? `<table style="margin-top:6px"><thead><tr><th>N°</th><th>Point / Décision</th><th>Responsable</th><th>Échéance</th><th>Statut</th></tr></thead><tbody>${p.points.map((pt, i) => `<tr><td>${i + 1}</td><td>${pt.description || ""}</td><td>${pt.responsable || ""}</td><td>${pt.echeance ? new Date(pt.echeance).toLocaleDateString("fr-FR") : ""}</td><td><span class="pill">${pt.statut || ""}</span></td></tr>`).join("")}</tbody></table>` : "";
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>PV — ${new Date(p.date_reunion).toLocaleDateString("fr-FR")}${p.numero ? " · " + p.numero : ""}</h3>
+    <div class="muted" style="margin-bottom:8px">${p.lieu ? "Lieu : " + p.lieu + " · " : ""}${p.heure ? p.heure + " · " : ""}${p.redacteur ? "Rédacteur : " + p.redacteur : ""}</div>
+    ${row("Objet", p.objet)}${row("Maître d'ouvrage", p.maitre_ouvrage)}${row("Maître d'œuvre", p.maitre_oeuvre)}${row("Présents", p.participants)}${row("Avancement", p.avancement)}
+    ${pts}
+    ${row("Sécurité", p.securite)}${row("Divers", p.divers)}${row("Observations", p.observations)}${p.prochaine_date ? row("Prochaine réunion", new Date(p.prochaine_date).toLocaleDateString("fr-FR") + (p.prochaine_heure ? " à " + p.prochaine_heure : "") + (p.prochaine_lieu ? " — " + p.prochaine_lieu : "")) : ""}
+    <div class="mactions"><button class="btn ghost" onclick="el('modal-root').innerHTML=''">Fermer</button><button class="btn" onclick="openDoc('/api/pv-reunions/${id}/pdf')">📄 PDF</button></div>
+    </div></div>`;
+}
+async function delPV(id) { if (confirm("Supprimer ce PV ?")) { await api("/api/pv-reunions/" + id, { method: "DELETE" }); renderPVReunions(); } }
 
 /* ===================== Centre d'alertes ===================== */
 async function renderAlertes() {

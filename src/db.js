@@ -348,6 +348,24 @@ CREATE TABLE IF NOT EXISTS rapport_photo (
   rapport_id int REFERENCES rapport_chantier(id) ON DELETE CASCADE,
   data text, legende text, created_at timestamptz DEFAULT now());
 
+-- PV / compte rendu de réunion de chantier
+CREATE TABLE IF NOT EXISTS pv_reunion (
+  id serial PRIMARY KEY,
+  chantier_id int REFERENCES chantier(id),
+  numero text,
+  date_reunion date NOT NULL DEFAULT current_date,
+  heure text, lieu text, objet text,
+  maitre_ouvrage text, maitre_oeuvre text, redacteur text,
+  participants text, absents text, diffusion text,
+  avancement text, securite text, divers text,
+  prochaine_date date, prochaine_heure text, prochaine_lieu text,
+  delai_contestation int DEFAULT 8, observations text,
+  company_id int REFERENCES company(id), created_at timestamptz DEFAULT now());
+CREATE TABLE IF NOT EXISTS pv_point (
+  id serial PRIMARY KEY,
+  pv_id int REFERENCES pv_reunion(id) ON DELETE CASCADE,
+  ordre int, description text, responsable text, echeance date, statut text);
+
 -- Multi-tenant : rattachement d'un utilisateur à une société (NULL = super-admin)
 ALTER TABLE app_user ADD COLUMN IF NOT EXISTS company_id int REFERENCES company(id);
 
@@ -469,6 +487,18 @@ ALTER TABLE incident ADD COLUMN IF NOT EXISTS type_accident text;
 ALTER TABLE controle_securite ADD COLUMN IF NOT EXISTS domaine text;
 ALTER TABLE controle_securite ADD COLUMN IF NOT EXISTS actions_correctives text;
 ALTER TABLE controle_securite ADD COLUMN IF NOT EXISTS echeance date;
+-- Rapport journalier de chantier
+ALTER TABLE rapport_chantier ADD COLUMN IF NOT EXISTS numero text;
+ALTER TABLE rapport_chantier ADD COLUMN IF NOT EXISTS redige_par text;
+ALTER TABLE rapport_chantier ADD COLUMN IF NOT EXISTS temperature text;
+ALTER TABLE rapport_chantier ADD COLUMN IF NOT EXISTS heures_arret numeric(5,2);
+ALTER TABLE rapport_chantier ADD COLUMN IF NOT EXISTS effectif_st int DEFAULT 0;
+ALTER TABLE rapport_chantier ADD COLUMN IF NOT EXISTS materiel_present text;
+ALTER TABLE rapport_chantier ADD COLUMN IF NOT EXISTS travaux_realises text;
+ALTER TABLE rapport_chantier ADD COLUMN IF NOT EXISTS approvisionnements text;
+ALTER TABLE rapport_chantier ADD COLUMN IF NOT EXISTS incidents text;
+ALTER TABLE rapport_chantier ADD COLUMN IF NOT EXISTS visiteurs text;
+ALTER TABLE rapport_chantier ADD COLUMN IF NOT EXISTS instructions text;
 `;
 
 async function seedIfEmpty(table, fn) {

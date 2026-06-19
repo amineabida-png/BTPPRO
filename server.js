@@ -37,7 +37,7 @@ function domainOf(p) {
   if (p.startsWith("/api/factures")) return "facturation";
   if (p.startsWith("/api/paiements") || p.startsWith("/api/tresorerie")) return "facturation";
   if (p.startsWith("/api/pointages") || p.startsWith("/api/taches")) return "chantiers";
-  if (p.startsWith("/api/materiel") || p.startsWith("/api/rapports")) return "chantiers";
+  if (p.startsWith("/api/materiel") || p.startsWith("/api/rapports") || p.startsWith("/api/pv-reunions")) return "chantiers";
   if (p.startsWith("/api/alertes")) return null;
   if (p.startsWith("/api/compta")) return "rentabilite";
   if (p.startsWith("/api/bordereau")) return "devis";
@@ -1525,16 +1525,16 @@ app.get("/api/rapports/:id", requireAuth, wrap(async (req, res) => {
   res.json(r);
 }));
 app.post("/api/rapports", requireAuth, wrap(async (req, res) => {
-  const { chantier_id, date_rapport, meteo, effectif, avancement, observations, photos = [] } = req.body || {};
+  const b = req.body || {};
   const company = await cid(req);
   const conn = await pool.connect();
   try {
     await conn.query("BEGIN");
-    const r = (await conn.query(
-      `INSERT INTO rapport_chantier (chantier_id,date_rapport,meteo,effectif,avancement,observations,company_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [chantier_id || null, date_rapport || new Date(), meteo || null, effectif || 0, avancement || null, observations || null, company])).rows[0];
-    for (const p of (photos || []).slice(0, 12))
+    const cols = ["chantier_id", "date_rapport", "numero", "redige_par", "meteo", "temperature", "heures_arret", "effectif", "effectif_st", "materiel_present", "travaux_realises", "avancement", "approvisionnements", "incidents", "visiteurs", "instructions", "observations"];
+    const vals = [b.chantier_id || null, b.date_rapport || new Date(), b.numero || null, b.redige_par || null, b.meteo || null, b.temperature || null, b.heures_arret || null, b.effectif || 0, b.effectif_st || 0, b.materiel_present || null, b.travaux_realises || null, b.avancement || null, b.approvisionnements || null, b.incidents || null, b.visiteurs || null, b.instructions || null, b.observations || null];
+    const ph = cols.map((_, i) => `$${i + 1}`);
+    const r = (await conn.query(`INSERT INTO rapport_chantier (${cols.join(",")},company_id) VALUES (${ph.join(",")},$${cols.length + 1}) RETURNING *`, [...vals, company])).rows[0];
+    for (const p of (b.photos || []).slice(0, 12))
       await conn.query("INSERT INTO rapport_photo (rapport_id,data,legende) VALUES ($1,$2,$3)", [r.id, p.data || null, p.legende || null]);
     await conn.query("COMMIT"); res.status(201).json(r);
   } catch (e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
@@ -1547,13 +1547,24 @@ app.get("/api/rapports/:id/pdf", requireAuth, wrap(async (req, res) => {
   const photos = (await pool.query("SELECT * FROM rapport_photo WHERE rapport_id=$1 ORDER BY id", [req.params.id])).rows;
   const co = await getCompany(r.company_id || (await cid(req)));
   const doc = newDoc(res, `rapport-${ch ? ch.code : r.id}.pdf`);
-  let y = docLetterhead(doc, co, "RAPPORT", ch ? ch.code : r.id, new Date(r.date_rapport).toLocaleDateString("fr-FR"));
+  let y = docLetterhead(doc, co, "RAPPORT DE CHANTIER", r.numero || (ch ? ch.code : r.id), new Date(r.date_rapport).toLocaleDateString("fr-FR"));
   y = clientBlock(doc, y + 6, ch ? ch.nom : "Chantier", ch && ch.ville ? "Lieu : " + ch.ville : null, null, "CHANTIER");
-  y = docParagraphs(doc, y + 4, [
-    { text: `Météo : ${r.meteo || "—"}     ·     Effectif présent : ${r.effectif || 0}`, size: 10.5, gap: 10 },
-    { text: "Avancement", bold: true, size: 11, gap: 2 }, { text: r.avancement || "—", size: 10.5, gap: 10 },
-    { text: "Observations", bold: true, size: 11, gap: 2 }, { text: r.observations || "—", size: 10.5, gap: 12 },
-  ]);
+  const meteoLine = `Météo : ${r.meteo || "—"}${r.temperature ? "  ·  Température : " + r.temperature : ""}${r.heures_arret ? "  ·  Arrêt météo/pannes : " + r.heures_arret + " h" : ""}`;
+  const effLine = `Effectif propre : ${r.effectif || 0}${r.effectif_st ? "  ·  Sous-traitants : " + r.effectif_st : ""}${r.redige_par ? "  ·  Rédigé par : " + r.redige_par : ""}`;
+  const blocks = [
+    { text: meteoLine, size: 10, gap: 4 },
+    { text: effLine, size: 10, gap: 12 },
+  ];
+  const sec = (title, val) => { if (val) { blocks.push({ text: title, bold: true, size: 10.5, gap: 2 }); blocks.push({ text: val, size: 10, gap: 10 }); } };
+  sec("Travaux réalisés", r.travaux_realises);
+  sec("Avancement", r.avancement);
+  sec("Matériel / engins présents", r.materiel_present);
+  sec("Approvisionnements / livraisons", r.approvisionnements);
+  sec("Incidents / aléas", r.incidents);
+  sec("Visiteurs (MOA / MOE / BET / contrôle)", r.visiteurs);
+  sec("Instructions / décisions", r.instructions);
+  sec("Observations", r.observations);
+  y = docParagraphs(doc, y + 4, blocks);
   if (photos.length) {
     doc.font("Helvetica-Bold").fontSize(11).fillColor("#15171C").text("Photos", 40, y); y += 16;
     const M = 40, W = 515, gp = 10, cw = (W - gp) / 2, chh = 140; let i = 0;
@@ -1570,6 +1581,116 @@ app.get("/api/rapports/:id/pdf", requireAuth, wrap(async (req, res) => {
   docFooter(doc, co, "Rapport de visite de chantier — document interne.");
   doc.end();
 }));
+
+// ══════════════ PV / COMPTE RENDU DE RÉUNION DE CHANTIER ══════════════
+app.get("/api/pv-reunions", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const where = req.query.chantier_id ? "AND p.chantier_id=$2" : "";
+  const params = req.query.chantier_id ? [company, req.query.chantier_id] : [company];
+  const rows = (await pool.query(
+    `SELECT p.id, p.numero, p.date_reunion, p.objet, p.chantier_id, c.code AS chantier_code, c.nom AS chantier_nom,
+            (SELECT count(*)::int FROM pv_point WHERE pv_id=p.id) AS nb_points
+     FROM pv_reunion p LEFT JOIN chantier c ON c.id=p.chantier_id
+     WHERE p.company_id=$1 ${where} ORDER BY p.date_reunion DESC, p.id DESC`, params)).rows;
+  res.json(rows);
+}));
+app.get("/api/pv-reunions/:id", requireAuth, wrap(async (req, res) => {
+  const p = (await pool.query("SELECT * FROM pv_reunion WHERE id=$1", [req.params.id])).rows[0];
+  if (!p) return res.status(404).json({ error: "Introuvable" });
+  p.points = (await pool.query("SELECT * FROM pv_point WHERE pv_id=$1 ORDER BY ordre, id", [req.params.id])).rows;
+  res.json(p);
+}));
+app.post("/api/pv-reunions", requireAuth, wrap(async (req, res) => {
+  const b = req.body || {};
+  const company = await cid(req);
+  const conn = await pool.connect();
+  try {
+    await conn.query("BEGIN");
+    const cols = ["chantier_id", "numero", "date_reunion", "heure", "lieu", "objet", "maitre_ouvrage", "maitre_oeuvre", "redacteur", "participants", "absents", "diffusion", "avancement", "securite", "divers", "prochaine_date", "prochaine_heure", "prochaine_lieu", "delai_contestation", "observations"];
+    const vals = cols.map((c) => (b[c] === undefined || b[c] === "" ? null : b[c]));
+    if (!vals[2]) vals[2] = new Date();
+    const ph = cols.map((_, i) => `$${i + 1}`);
+    const r = (await conn.query(`INSERT INTO pv_reunion (${cols.join(",")},company_id) VALUES (${ph.join(",")},$${cols.length + 1}) RETURNING *`, [...vals, company])).rows[0];
+    let i = 0;
+    for (const pt of (b.points || [])) {
+      if (!pt || (!pt.description && !pt.responsable)) continue;
+      await conn.query("INSERT INTO pv_point (pv_id,ordre,description,responsable,echeance,statut) VALUES ($1,$2,$3,$4,$5,$6)",
+        [r.id, ++i, pt.description || null, pt.responsable || null, pt.echeance || null, pt.statut || "ouvert"]);
+    }
+    await conn.query("COMMIT"); res.status(201).json(r);
+  } catch (e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
+}));
+app.delete("/api/pv-reunions/:id", requireAuth, wrap(async (req, res) => { await pool.query("DELETE FROM pv_reunion WHERE id=$1", [req.params.id]); res.json({ ok: true }); }));
+app.get("/api/pv-reunions/:id/pdf", requireAuth, wrap(async (req, res) => {
+  const p = (await pool.query("SELECT * FROM pv_reunion WHERE id=$1", [req.params.id])).rows[0];
+  if (!p) return res.status(404).json({ error: "Introuvable" });
+  const ch = p.chantier_id ? (await pool.query("SELECT * FROM chantier WHERE id=$1", [p.chantier_id])).rows[0] : null;
+  const points = (await pool.query("SELECT * FROM pv_point WHERE pv_id=$1 ORDER BY ordre, id", [req.params.id])).rows;
+  const co = await getCompany(p.company_id || (await cid(req)));
+  const M = 40, W = 515;
+  const fd = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "—");
+  const doc = newDoc(res, `pv-reunion-${p.numero || p.id}.pdf`);
+  doc.y = docLetterhead(doc, co, "PV DE RÉUNION DE CHANTIER", p.numero || ("RC-" + p.id), fd(p.date_reunion)) + 4;
+  // Bloc infos générales
+  const info = [
+    ["Chantier", ch ? (ch.nom + (ch.code ? " (" + ch.code + ")" : "")) : "—"],
+    ["Date / heure", fd(p.date_reunion) + (p.heure ? " à " + p.heure : "")],
+    ["Lieu de réunion", p.lieu || "—"],
+    ["Maître d'ouvrage", p.maitre_ouvrage || "—"],
+    ["Maître d'œuvre", p.maitre_oeuvre || "—"],
+    ["Rédacteur", p.redacteur || "—"],
+  ];
+  let yy = doc.y;
+  doc.rect(M, yy, W, 4 + Math.ceil(info.length / 2) * 24).fill("#F7F8FA");
+  info.forEach((kv, idx) => {
+    const col = idx % 2, x = M + 10 + col * ((W - 20) / 2), ry = yy + 6 + Math.floor(idx / 2) * 24;
+    doc.font("Helvetica").fontSize(7.5).fillColor("#8a93a0").text(kv[0], x, ry, { width: (W - 40) / 2 });
+    doc.font("Helvetica-Bold").fontSize(9).fillColor("#15171C").text(kv[1], x, ry + 9, { width: (W - 40) / 2 });
+  });
+  doc.y = yy + 10 + Math.ceil(info.length / 2) * 24;
+  const para = (t, o = {}) => { doc.font(o.bold ? "Helvetica-Bold" : "Helvetica").fontSize(o.size || 9.5).fillColor(o.color || "#15171C").text(t, M, doc.y, { width: W, align: o.align || "left" }); doc.moveDown(o.gap == null ? 0.5 : o.gap); };
+  const sec = (title, val) => { if (!val) return; if (doc.y > 720) doc.addPage(); doc.moveDown(0.2); doc.font("Helvetica-Bold").fontSize(10).fillColor("#15171C").text(title.toUpperCase(), M, doc.y, { width: W }); const yl = doc.y + 1; doc.moveTo(M, yl).lineTo(M + W, yl).strokeColor("#F5B301").lineWidth(1).stroke(); doc.moveDown(0.4); para(val, { gap: 0.6 }); };
+  sec("Objet de la réunion", p.objet);
+  sec("Participants présents", p.participants);
+  sec("Absents / excusés", p.absents);
+  sec("Avancement des travaux", p.avancement);
+  // Tableau des points / décisions
+  if (points.length) {
+    if (doc.y > 680) doc.addPage();
+    doc.moveDown(0.2); doc.font("Helvetica-Bold").fontSize(10).fillColor("#15171C").text("POINTS ABORDÉS & DÉCISIONS", M, doc.y, { width: W });
+    const yl = doc.y + 1; doc.moveTo(M, yl).lineTo(M + W, yl).strokeColor("#F5B301").lineWidth(1).stroke(); doc.moveDown(0.5);
+    const cols = [["N°", 28], ["Point / Décision", 277], ["Responsable", 95], ["Échéance", 60], ["Statut", 55]];
+    let hx = M, hy = doc.y;
+    doc.rect(M, hy - 2, W, 16).fill("#15171C");
+    cols.forEach((c) => { doc.font("Helvetica-Bold").fontSize(8).fillColor("#fff").text(c[0], hx + 3, hy + 2, { width: c[1] - 6 }); hx += c[1]; });
+    doc.y = hy + 16;
+    points.forEach((pt, idx) => {
+      const desc = pt.description || "";
+      const h = Math.max(16, doc.heightOfString(desc, { width: cols[1][1] - 6, fontSize: 8 }) + 6);
+      if (doc.y + h > 780) doc.addPage();
+      const ry = doc.y; if (idx % 2) doc.rect(M, ry - 1, W, h).fill("#F7F8FA");
+      let cx = M;
+      const put = (t, w, bold) => { doc.font(bold ? "Helvetica-Bold" : "Helvetica").fontSize(8).fillColor("#15171C").text(t || "", cx + 3, ry + 3, { width: w - 6 }); cx += w; };
+      put(String(pt.ordre || idx + 1), cols[0][1]); put(desc, cols[1][1]); put(pt.responsable, cols[2][1]); put(pt.echeance ? fd(pt.echeance) : "", cols[3][1]); put(pt.statut, cols[4][1], true);
+      doc.y = ry + h;
+    });
+    doc.moveDown(0.6);
+  }
+  sec("Sécurité / HSE", p.securite);
+  sec("Questions diverses", p.divers);
+  sec("Observations", p.observations);
+  if (p.prochaine_date || p.prochaine_lieu) sec("Prochaine réunion", `${fd(p.prochaine_date)}${p.prochaine_heure ? " à " + p.prochaine_heure : ""}${p.prochaine_lieu ? " — " + p.prochaine_lieu : ""}`);
+  if (doc.y > 700) doc.addPage();
+  doc.moveDown(0.4);
+  para(`Sauf observation écrite formulée dans un délai de ${p.delai_contestation || 8} jours à compter de sa diffusion, le présent compte rendu sera réputé approuvé par l'ensemble des intervenants.`, { size: 8.5, color: "#5A6473", gap: 1 });
+  const sy = doc.y + 6;
+  doc.font("Helvetica-Bold").fontSize(9).fillColor("#15171C").text("Le rédacteur" + (p.maitre_oeuvre ? " (Maître d'œuvre)" : ""), M + W - 220, sy, { width: 220, align: "right" });
+  doc.font("Helvetica").fontSize(8).fillColor("#5A6473").text(p.redacteur || p.maitre_oeuvre || "", M + W - 220, sy + 13, { width: 220, align: "right" });
+  doc.lineWidth(0.8).strokeColor("#cbd5e1").rect(M + W - 200, sy + 28, 200, 50).stroke();
+  docFooter(doc, co, "Compte rendu de réunion de chantier — diffusé à l'ensemble des intervenants.");
+  doc.end();
+}));
+
 
 // ══════════════ CENTRE D'ALERTES ══════════════
 app.get("/api/alertes", requireAuth, wrap(async (req, res) => {
