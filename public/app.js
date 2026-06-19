@@ -126,7 +126,7 @@ async function disable2FA() {
 }
 
 const VIEW_DOMAIN = {
-  dash: "dashboard", rentabilite: "rentabilite", emps: "rh", organigramme: "rh", paie: "paie", conges: "conges", runs: "paie",
+  dash: "dashboard", rentabilite: "rentabilite", emps: "rh", ouvriers: "rh", organigramme: "rh", paie: "paie", conges: "conges", runs: "paie",
   chantiers: "chantiers", incidents: "securite", documents: "ged", ouvrages: "devis", devis: "devis", factures: "facturation",
   articles: "stock", "demandes-achat": "achats", "bons-commande": "achats", fournisseurs: "tiers", clients: "tiers", "sous-traitants": "tiers",
   integrations: null, users: "admin", societe: "admin",
@@ -151,7 +151,7 @@ async function loadPerms() {
 /* ===================== Navigation ===================== */
 document.querySelectorAll(".nav").forEach((b) => (b.onclick = () => { show(b.dataset.view); document.getElementById("app").classList.remove("side-open"); }));
 const ROUTES = {
-  dash: renderDash, rentabilite: renderRentabilite, users: renderUsers, emps: renderEmps,
+  dash: renderDash, rentabilite: renderRentabilite, users: renderUsers, emps: renderEmps, ouvriers: renderOuvriers,
   organigramme: renderOrganigramme, paie: renderPaie, conges: renderConges, runs: renderRuns,
   ouvrages: renderOuvrages, devis: renderDevis, factures: renderFactures, articles: renderStock,
   "bons-commande": renderCommandes, chantiers: renderChantiers, incidents: renderSecurite,
@@ -1612,6 +1612,132 @@ async function viewPV(id) {
     </div></div>`;
 }
 async function delPV(id) { if (confirm("Supprimer ce PV ?")) { await api("/api/pv-reunions/" + id, { method: "DELETE" }); renderPVReunions(); } }
+
+/* ===================== Fiche d'entrée ouvrier de chantier ===================== */
+const OUV_METIERS = ["", "Manœuvre", "Maçon", "Ferrailleur", "Coffreur", "Carreleur", "Peintre", "Plombier", "Électricien", "Plâtrier", "Étancheur", "Menuisier", "Soudeur", "Conducteur d'engin", "Chauffeur", "Chef d'équipe", "Gardien", "Autre"];
+const OUV_NIVEAUX = ["", "Non qualifié", "Qualifié", "Hautement qualifié"];
+const OUV_PAIE = ["Journalier", "Hebdomadaire", "À la tâche", "Mensuel"];
+const OUV_STATUTS = ["actif", "inactif", "sorti"];
+let ouvPhoto = "", ouvDocs = [];
+function fileToJpeg(file, maxDim, quality) {
+  maxDim = maxDim || 1400; quality = quality || 0.82;
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onerror = () => reject(new Error("read"));
+    r.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("decode"));
+      img.onload = () => {
+        let w = img.width, h = img.height;
+        if (Math.max(w, h) > maxDim) { const s = maxDim / Math.max(w, h); w = Math.round(w * s); h = Math.round(h * s); }
+        const c = document.createElement("canvas"); c.width = w; c.height = h;
+        c.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(c.toDataURL("image/jpeg", quality));
+      };
+      img.src = r.result;
+    };
+    r.readAsDataURL(file);
+  });
+}
+async function renderOuvriers() {
+  await getCache("chantiers");
+  const list = await api("/api/ouvriers");
+  const actifs = list.filter((o) => o.statut === "actif");
+  const masseJour = actifs.reduce((s, o) => s + (Number(o.salaire_journalier) || 0), 0);
+  V().innerHTML = `<div class="bar"><div><h1>Fiches ouvriers de chantier</h1><div class="sub">Journaliers & qualifiés · salaire journalier · pièces jointes (CIN…) · registre du personnel</div></div>
+    <button class="btn sm" onclick="ficheOuvrier()">+ Nouvel ouvrier</button></div>
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-l">Ouvriers actifs</div><div class="kpi-v">${actifs.length}</div></div>
+      <div class="kpi"><div class="kpi-l">Coût main-d'œuvre / jour</div><div class="kpi-v">${fmt(masseJour)} <small>MAD</small></div></div>
+      <div class="kpi"><div class="kpi-l">Total fiches</div><div class="kpi-v">${list.length}</div></div>
+    </div>
+    <div class="card"><table><thead><tr><th>Nom</th><th>Métier</th><th>Niveau</th><th class="r">Salaire/jour</th><th>Chantier</th><th>CNSS</th><th>Statut</th><th></th></tr></thead><tbody>
+  ${list.length ? list.map((o) => `<tr><td><b>${o.nom}</b>${o.cin ? '<div class="muted" style="font-size:11px">CIN ' + o.cin + "</div>" : ""}</td><td>${o.metier || "—"}</td><td>${o.niveau_qualif || "—"}</td><td class="r mono">${o.salaire_journalier ? fmt(o.salaire_journalier) : "—"}</td><td>${o.chantier_code || "—"}</td><td>${o.cnss_declare ? "✅" : "—"}</td><td><span class="pill">${o.statut}</span></td>
+    <td class="r"><button class="btn sm ghost" onclick="viewOuvrier(${o.id})">Voir</button> <button class="btn sm ghost" onclick="openDoc('/api/ouvriers/${o.id}/pdf')">📄 Fiche</button> <button class="btn sm ghost" onclick="editOuvrier(${o.id})">✏️</button> <button class="btn sm danger" onclick="delOuvrier(${o.id})">×</button></td></tr>`).join("") : `<tr><td colspan="8" class="muted">Aucun ouvrier.</td></tr>`}
+    </tbody></table></div>`;
+}
+function ouvDocsEditor() {
+  return `${ouvPhoto ? `<div style="margin-bottom:8px"><img src="${ouvPhoto}" style="width:90px;height:110px;object-fit:cover;border-radius:8px;border:1px solid var(--line)"> <button class="btn sm danger" onclick="ouvPhoto='';redrawOuvDocs()">Retirer la photo</button></div>` : ""}
+  <div style="display:flex;flex-wrap:wrap;gap:8px">${ouvDocs.map((d, i) => `<div style="text-align:center"><img src="${d.data}" style="width:110px;height:75px;object-fit:cover;border-radius:6px;border:1px solid var(--line)"><div style="font-size:11px">${d.type || "Doc"} <a href="#" onclick="ouvDocs.splice(${i},1);redrawOuvDocs();return false" style="color:#c0392b">×</a></div></div>`).join("")}</div>`;
+}
+function redrawOuvDocs() { const w = el("ouv-docs-wrap"); if (w) w.innerHTML = ouvDocsEditor(); }
+async function setOuvPhoto(input) { const f = input.files[0]; if (!f) return; try { ouvPhoto = await fileToJpeg(f, 900, 0.85); redrawOuvDocs(); } catch (e) { alert("Image illisible, réessayez avec une autre photo."); } }
+async function addOuvDocs(input) {
+  const type = (el("ouv-doctype") ? el("ouv-doctype").value : "") || "Document";
+  for (const f of [...input.files].slice(0, 8)) { try { const data = await fileToJpeg(f, 1500, 0.8); ouvDocs.push({ type, nom: f.name, data }); redrawOuvDocs(); } catch (e) { /* ignore image illisible */ } }
+}
+function ficheOuvrier(o) {
+  o = o || {}; ouvPhoto = o.photo || ""; ouvDocs = [];
+  const chs = caches.chantiers || []; const v = (k) => (o[k] != null ? String(o[k]).replace(/"/g, "&quot;") : "");
+  const inp = (k, l, t = "text") => `<div class="field"><label>${l}</label><input id="ou-${k}" type="${t}" value="${v(k)}"></div>`;
+  const sel = (k, l, opts) => `<div class="field"><label>${l}</label><select id="ou-${k}">${opts.map((x) => `<option value="${x}" ${v(k) === x ? "selected" : ""}>${x || "—"}</option>`).join("")}</select></div>`;
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>${o.id ? "Modifier l'ouvrier" : "Nouvelle fiche d'entrée ouvrier"}</h3>
+    <div class="colhead">Identité</div>
+    <div class="mform">
+      ${inp("nom", "Nom complet *")}${inp("cin", "CIN")}${sel("sexe", "Sexe", ["", "M", "F"])}${inp("date_naissance", "Date de naissance", "date")}${inp("lieu_naissance", "Lieu de naissance")}${inp("telephone", "Téléphone")}
+      <div class="field" style="grid-column:1/-1"><label>Adresse</label><input id="ou-adresse" value="${v("adresse")}"></div>
+    </div>
+    <div class="colhead" style="margin-top:10px">Qualification & rémunération</div>
+    <div class="mform">
+      ${sel("metier", "Métier", OUV_METIERS)}${sel("niveau_qualif", "Niveau", OUV_NIVEAUX)}${inp("experience_annees", "Expérience (ans)", "number")}
+      ${inp("salaire_journalier", "Salaire journalier (MAD/jour)", "number")}${sel("mode_paiement", "Mode de paiement", OUV_PAIE)}
+    </div>
+    <div class="colhead" style="margin-top:10px">Affectation</div>
+    <div class="mform">
+      <div class="field"><label>Chantier</label><select id="ou-chantier_id"><option value="">— aucun —</option>${chs.map((c) => `<option value="${c.id}" ${o.chantier_id == c.id ? "selected" : ""}>${c.code} — ${c.nom}</option>`).join("")}</select></div>
+      ${inp("date_entree", "Date d'entrée", "date")}${inp("date_sortie", "Date de sortie", "date")}${sel("statut", "Statut", OUV_STATUTS)}
+    </div>
+    <div class="colhead" style="margin-top:10px">Protection sociale</div>
+    <div class="mform">
+      <div class="field"><label>Déclaré CNSS</label><select id="ou-cnss_declare"><option value="false" ${!o.cnss_declare ? "selected" : ""}>Non</option><option value="true" ${o.cnss_declare ? "selected" : ""}>Oui</option></select></div>
+      ${inp("num_cnss", "N° CNSS (si déclaré)")}${inp("assurance_compagnie", "Assurance AT — compagnie")}${inp("assurance_police", "Assurance AT — N° police")}
+    </div>
+    <div class="colhead" style="margin-top:10px">Personne à prévenir & observations</div>
+    <div class="mform">
+      ${inp("contact_urgence_nom", "Nom du contact d'urgence")}${inp("contact_urgence_tel", "Téléphone d'urgence")}
+      <div class="field" style="grid-column:1/-1"><label>Observations</label><textarea id="ou-observations" rows="2" class="ta">${o.observations || ""}</textarea></div>
+    </div>
+    <div class="colhead" style="margin-top:10px">Photo & pièces jointes (CIN…)</div>
+    <div class="mform">
+      <div class="field"><label>Photo d'identité</label><input type="file" accept="image/*" onchange="setOuvPhoto(this)"></div>
+      <div class="field"><label>Type de pièce</label><input id="ouv-doctype" placeholder="CIN recto, CIN verso, contrat…"></div>
+      <div class="field" style="grid-column:1/-1"><label>Ajouter des pièces (photos)</label><input type="file" accept="image/*" multiple onchange="addOuvDocs(this)"></div>
+    </div>
+    <div id="ouv-docs-wrap" style="margin-top:8px">${ouvDocsEditor()}</div>
+    <div class="mactions"><button class="btn ghost" onclick="el('modal-root').innerHTML=''">Annuler</button><button class="btn" onclick="saveOuvrier(${o.id || 0})">💾 Enregistrer</button></div>
+    </div></div>`;
+}
+async function saveOuvrier(id) {
+  const g = (k) => { const e = el("ou-" + k); return e ? e.value : ""; };
+  const keys = ["nom", "cin", "date_naissance", "lieu_naissance", "sexe", "adresse", "telephone", "metier", "niveau_qualif", "experience_annees", "salaire_journalier", "mode_paiement", "date_entree", "date_sortie", "chantier_id", "num_cnss", "assurance_compagnie", "assurance_police", "contact_urgence_nom", "contact_urgence_tel", "statut", "observations"];
+  const body = {}; keys.forEach((k) => { const val = g(k); if (val !== undefined && val !== "") body[k] = val; });
+  if (!body.nom) { alert("Le nom est obligatoire."); return; }
+  body.cnss_declare = g("cnss_declare") === "true";
+  if (ouvPhoto) body.photo = ouvPhoto;
+  if (ouvDocs.length) body.docs = ouvDocs;
+  try {
+    if (id) await api("/api/ouvriers/" + id, { method: "PUT", body: JSON.stringify(body) });
+    else await api("/api/ouvriers", { method: "POST", body: JSON.stringify(body) });
+    el("modal-root").innerHTML = ""; renderOuvriers();
+  } catch (e) { alert(e.message); }
+}
+async function editOuvrier(id) { const o = await api("/api/ouvriers/" + id); ficheOuvrier(o); }
+async function viewOuvrier(id) {
+  const o = await api("/api/ouvriers/" + id);
+  const row = (l, v) => v ? `<div style="margin:4px 0"><b>${l} :</b> ${v}</div>` : "";
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>${o.nom}</h3>
+    <div style="display:flex;gap:14px">
+      ${o.photo ? `<img src="${o.photo}" style="width:110px;height:135px;object-fit:cover;border-radius:8px;border:1px solid var(--line)">` : ""}
+      <div style="flex:1">
+        <div class="muted" style="margin-bottom:6px">${o.metier || ""}${o.niveau_qualif ? " · " + o.niveau_qualif : ""}</div>
+        ${row("CIN", o.cin)}${row("Téléphone", o.telephone)}${row("Salaire journalier", o.salaire_journalier ? fmt(o.salaire_journalier) + " MAD/jour" : "")}${row("Mode de paiement", o.mode_paiement)}${row("Date d'entrée", o.date_entree ? new Date(o.date_entree).toLocaleDateString("fr-FR") : "")}${row("Déclaré CNSS", o.cnss_declare ? "Oui" : "Non")}${row("Assurance AT", o.assurance_compagnie ? o.assurance_compagnie + (o.assurance_police ? " (" + o.assurance_police + ")" : "") : "")}${row("Contact urgence", o.contact_urgence_nom ? o.contact_urgence_nom + (o.contact_urgence_tel ? " · " + o.contact_urgence_tel : "") : "")}
+      </div>
+    </div>
+    ${(o.docs || []).length ? `<div class="colhead" style="margin-top:10px">Pièces jointes</div><div style="display:flex;flex-wrap:wrap;gap:8px">${o.docs.map((d) => `<div style="text-align:center"><img src="${d.data}" style="width:130px;height:90px;object-fit:cover;border-radius:6px;border:1px solid var(--line)"><div style="font-size:11px">${d.type || "Document"}</div></div>`).join("")}</div>` : ""}
+    <div class="mactions"><button class="btn ghost" onclick="el('modal-root').innerHTML=''">Fermer</button><button class="btn" onclick="openDoc('/api/ouvriers/${id}/pdf')">📄 Fiche PDF</button></div>
+    </div></div>`;
+}
+async function delOuvrier(id) { if (confirm("Supprimer cette fiche ouvrier ?")) { await api("/api/ouvriers/" + id, { method: "DELETE" }); renderOuvriers(); } }
 
 /* ===================== Centre d'alertes ===================== */
 async function renderAlertes() {

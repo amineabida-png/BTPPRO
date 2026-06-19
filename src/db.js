@@ -366,6 +366,24 @@ CREATE TABLE IF NOT EXISTS pv_point (
   pv_id int REFERENCES pv_reunion(id) ON DELETE CASCADE,
   ordre int, description text, responsable text, echeance date, statut text);
 
+-- Fiche d'entrée ouvrier de chantier (journaliers / qualifiés, déclarés ou non CNSS)
+CREATE TABLE IF NOT EXISTS ouvrier_chantier (
+  id serial PRIMARY KEY,
+  nom text NOT NULL, cin text, date_naissance date, lieu_naissance text, sexe text,
+  adresse text, telephone text, photo text,
+  metier text, niveau_qualif text, experience_annees int,
+  salaire_journalier numeric(10,2), mode_paiement text DEFAULT 'Journalier',
+  date_entree date DEFAULT current_date, date_sortie date, chantier_id int REFERENCES chantier(id),
+  cnss_declare boolean DEFAULT false, num_cnss text,
+  assurance_compagnie text, assurance_police text,
+  contact_urgence_nom text, contact_urgence_tel text,
+  statut text DEFAULT 'actif', observations text,
+  company_id int REFERENCES company(id), created_at timestamptz DEFAULT now());
+CREATE TABLE IF NOT EXISTS ouvrier_doc (
+  id serial PRIMARY KEY,
+  ouvrier_id int REFERENCES ouvrier_chantier(id) ON DELETE CASCADE,
+  type text, nom text, data text, created_at timestamptz DEFAULT now());
+
 -- Multi-tenant : rattachement d'un utilisateur à une société (NULL = super-admin)
 ALTER TABLE app_user ADD COLUMN IF NOT EXISTS company_id int REFERENCES company(id);
 

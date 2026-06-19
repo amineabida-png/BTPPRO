@@ -29,7 +29,7 @@ function domainOf(p) {
   if (p.startsWith("/api/users")) return "admin";
   if (p.startsWith("/api/payroll") || p.startsWith("/api/payslips")) return "paie";
   if (p.startsWith("/api/conges")) return "conges";
-  if (p.startsWith("/api/employees") || p.startsWith("/api/organigramme") || p.startsWith("/api/evaluations") || p.startsWith("/api/contrats")) return "rh";
+  if (p.startsWith("/api/employees") || p.startsWith("/api/organigramme") || p.startsWith("/api/evaluations") || p.startsWith("/api/contrats") || p.startsWith("/api/ouvriers")) return "rh";
   if (p.startsWith("/api/chantiers") || p.startsWith("/api/affectations")) return "chantiers";
   if (p.startsWith("/api/incidents") || p.startsWith("/api/controles") || p.startsWith("/api/epi") || p.startsWith("/api/securite")) return "securite";
   if (p.startsWith("/api/documents") || p.startsWith("/api/signatures")) return "ged";
@@ -1582,7 +1582,129 @@ app.get("/api/rapports/:id/pdf", requireAuth, wrap(async (req, res) => {
   doc.end();
 }));
 
-// ══════════════ PV / COMPTE RENDU DE RÉUNION DE CHANTIER ══════════════
+// ══════════════ FICHE D'ENTRÉE OUVRIER DE CHANTIER ══════════════
+const OUV_COLS = ["nom", "cin", "date_naissance", "lieu_naissance", "sexe", "adresse", "telephone", "photo", "metier", "niveau_qualif", "experience_annees", "salaire_journalier", "mode_paiement", "date_entree", "date_sortie", "chantier_id", "cnss_declare", "num_cnss", "assurance_compagnie", "assurance_police", "contact_urgence_nom", "contact_urgence_tel", "statut", "observations"];
+app.get("/api/ouvriers", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const rows = (await pool.query(
+    `SELECT o.id,o.nom,o.cin,o.metier,o.niveau_qualif,o.salaire_journalier,o.mode_paiement,o.date_entree,o.statut,o.cnss_declare,o.telephone,o.chantier_id,
+            c.code AS chantier_code, c.nom AS chantier_nom, (o.photo IS NOT NULL) AS has_photo,
+            (SELECT count(*)::int FROM ouvrier_doc WHERE ouvrier_id=o.id) AS nb_docs
+     FROM ouvrier_chantier o LEFT JOIN chantier c ON c.id=o.chantier_id
+     WHERE o.company_id=$1 ORDER BY o.statut='actif' DESC, o.nom`, [company])).rows;
+  res.json(rows);
+}));
+app.get("/api/ouvriers/:id", requireAuth, wrap(async (req, res) => {
+  const o = (await pool.query("SELECT * FROM ouvrier_chantier WHERE id=$1", [req.params.id])).rows[0];
+  if (!o) return res.status(404).json({ error: "Introuvable" });
+  o.docs = (await pool.query("SELECT id,type,nom,data FROM ouvrier_doc WHERE ouvrier_id=$1 ORDER BY id", [req.params.id])).rows;
+  res.json(o);
+}));
+app.post("/api/ouvriers", requireAuth, wrap(async (req, res) => {
+  const b = req.body || {};
+  if (!b.nom) return res.status(400).json({ error: "Le nom est obligatoire" });
+  const company = await cid(req);
+  const conn = await pool.connect();
+  try {
+    await conn.query("BEGIN");
+    const cols = OUV_COLS.filter((c) => b[c] !== undefined && b[c] !== "");
+    const vals = cols.map((c) => b[c]);
+    cols.push("company_id"); vals.push(company);
+    const ph = cols.map((_, i) => `$${i + 1}`);
+    const o = (await conn.query(`INSERT INTO ouvrier_chantier (${cols.join(",")}) VALUES (${ph.join(",")}) RETURNING *`, vals)).rows[0];
+    for (const d of (b.docs || []).slice(0, 8))
+      await conn.query("INSERT INTO ouvrier_doc (ouvrier_id,type,nom,data) VALUES ($1,$2,$3,$4)", [o.id, d.type || "Document", d.nom || null, d.data || null]);
+    await conn.query("COMMIT"); res.status(201).json(o);
+  } catch (e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
+}));
+app.put("/api/ouvriers/:id", requireAuth, wrap(async (req, res) => {
+  const b = req.body || {};
+  const conn = await pool.connect();
+  try {
+    await conn.query("BEGIN");
+    const cols = OUV_COLS.filter((c) => b[c] !== undefined && b[c] !== "");
+    if (cols.length) {
+      const set = cols.map((c, i) => `${c}=$${i + 2}`);
+      await conn.query(`UPDATE ouvrier_chantier SET ${set.join(",")} WHERE id=$1`, [req.params.id, ...cols.map((c) => b[c])]);
+    }
+    for (const d of (b.docs || []).slice(0, 8))
+      if (d.data) await conn.query("INSERT INTO ouvrier_doc (ouvrier_id,type,nom,data) VALUES ($1,$2,$3,$4)", [req.params.id, d.type || "Document", d.nom || null, d.data]);
+    await conn.query("COMMIT");
+    const o = (await pool.query("SELECT * FROM ouvrier_chantier WHERE id=$1", [req.params.id])).rows[0];
+    res.json(o);
+  } catch (e) { await conn.query("ROLLBACK"); throw e; } finally { conn.release(); }
+}));
+app.delete("/api/ouvriers/:id", requireAuth, wrap(async (req, res) => { await pool.query("DELETE FROM ouvrier_chantier WHERE id=$1", [req.params.id]); res.json({ ok: true }); }));
+app.delete("/api/ouvriers/:id/docs/:docId", requireAuth, wrap(async (req, res) => { await pool.query("DELETE FROM ouvrier_doc WHERE id=$1 AND ouvrier_id=$2", [req.params.docId, req.params.id]); res.json({ ok: true }); }));
+app.get("/api/ouvriers/:id/pdf", requireAuth, wrap(async (req, res) => {
+  const o = (await pool.query("SELECT * FROM ouvrier_chantier WHERE id=$1", [req.params.id])).rows[0];
+  if (!o) return res.status(404).json({ error: "Introuvable" });
+  const ch = o.chantier_id ? (await pool.query("SELECT * FROM chantier WHERE id=$1", [o.chantier_id])).rows[0] : null;
+  const docs = (await pool.query("SELECT type,nom,data FROM ouvrier_doc WHERE ouvrier_id=$1 ORDER BY id", [req.params.id])).rows;
+  const co = await getCompany(o.company_id || (await cid(req)));
+  const M = 40, W = 515;
+  const fd = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "—");
+  const txt = (x) => (x == null || x === "" ? "—" : String(x));
+  const doc = newDoc(res, `fiche-ouvrier-${(o.nom || o.id).toString().replace(/\s+/g, "-")}.pdf`);
+  doc.y = docLetterhead(doc, co, "FICHE D'ENTRÉE OUVRIER", o.id, fd(o.date_entree)) + 4;
+  // Photo
+  let topY = doc.y;
+  if (o.photo && /^data:image\/jpe?g/i.test(o.photo)) {
+    try { doc.image(Buffer.from(o.photo.split(",")[1], "base64"), M + W - 90, topY, { fit: [90, 110], align: "right" }); } catch (_) {}
+  }
+  doc.font("Helvetica-Bold").fontSize(14).fillColor("#15171C").text(txt(o.nom), M, topY, { width: W - 100 });
+  doc.font("Helvetica").fontSize(10).fillColor("#5A6473").text(`${txt(o.metier)}${o.niveau_qualif ? " · " + o.niveau_qualif : ""}`, M, doc.y + 2, { width: W - 100 });
+  doc.moveDown(0.8);
+  const section = (title) => { if (doc.y > 720) doc.addPage(); doc.moveDown(0.25); doc.font("Helvetica-Bold").fontSize(9.5).fillColor("#15171C").text(title.toUpperCase(), M, doc.y, { width: W }); const yl = doc.y + 1; doc.moveTo(M, yl).lineTo(M + W, yl).strokeColor("#F5B301").lineWidth(1).stroke(); doc.moveDown(0.45); };
+  const kv = (pairs) => {
+    pairs = pairs.filter(Boolean);
+    for (let i = 0; i < pairs.length; i += 2) {
+      if (doc.y > 745) doc.addPage();
+      const y = doc.y, colW = (W - 12) / 2;
+      [pairs[i], pairs[i + 1]].forEach((p, idx) => { if (!p) return; const x = M + idx * (colW + 12); doc.font("Helvetica").fontSize(7.5).fillColor("#8a93a0").text(p[0], x, y, { width: colW }); doc.font("Helvetica-Bold").fontSize(9).fillColor("#15171C").text(txt(p[1]), x, y + 9, { width: colW }); });
+      doc.y = y + 25;
+    }
+  };
+  section("Identité");
+  kv([["CIN", o.cin], ["Sexe", o.sexe], ["Date de naissance", o.date_naissance ? fd(o.date_naissance) : null], ["Lieu de naissance", o.lieu_naissance], ["Adresse", o.adresse], ["Téléphone", o.telephone]]);
+  section("Qualification & rémunération");
+  kv([["Métier", o.metier], ["Niveau", o.niveau_qualif], ["Expérience", o.experience_annees ? o.experience_annees + " ans" : null], ["Mode de paiement", o.mode_paiement], ["Salaire journalier", o.salaire_journalier ? moneyFR(o.salaire_journalier) + " / jour" : null]]);
+  section("Affectation");
+  kv([["Chantier", ch ? (ch.nom + (ch.code ? " (" + ch.code + ")" : "")) : null], ["Date d'entrée", o.date_entree ? fd(o.date_entree) : null], ["Date de sortie", o.date_sortie ? fd(o.date_sortie) : null], ["Statut", o.statut]]);
+  section("Protection sociale");
+  kv([["Déclaré CNSS", o.cnss_declare ? "Oui" : "Non"], ["N° CNSS", o.num_cnss], ["Assurance AT — compagnie", o.assurance_compagnie], ["Assurance AT — N° police", o.assurance_police]]);
+  section("Personne à prévenir");
+  kv([["Nom", o.contact_urgence_nom], ["Téléphone", o.contact_urgence_tel]]);
+  if (o.observations) { section("Observations"); doc.font("Helvetica").fontSize(9).fillColor("#15171C").text(o.observations, M, doc.y, { width: W }); doc.moveDown(0.6); }
+  // Documents joints
+  const imgs = docs.filter((d) => d.data && /^data:image\/jpe?g/i.test(d.data));
+  if (imgs.length) {
+    section("Pièces jointes");
+    let x = M, y = doc.y;
+    for (const d of imgs.slice(0, 6)) {
+      if (y + 90 > 760) { doc.addPage(); y = doc.y; x = M; }
+      try { doc.image(Buffer.from(d.data.split(",")[1], "base64"), x, y, { fit: [120, 80] }); } catch (_) {}
+      doc.font("Helvetica").fontSize(7).fillColor("#5A6473").text(d.type || "Document", x, y + 82, { width: 120 });
+      x += 130; if (x + 120 > M + W) { x = M; y += 100; }
+    }
+    doc.y = y + 100;
+  }
+  // Engagement + signatures
+  if (doc.y > 660) doc.addPage();
+  doc.moveDown(0.4);
+  doc.font("Helvetica").fontSize(8).fillColor("#5A6473").text("Le travailleur reconnaît avoir pris connaissance des consignes de sécurité du chantier. Conformément à la loi n° 18-12, l'employeur garantit la couverture des accidents du travail. Fiche conservée au registre du personnel.", M, doc.y, { width: W, align: "justify" });
+  doc.moveDown(1.2);
+  const sy = doc.y, sw = (W - 20) / 2;
+  doc.font("Helvetica-Bold").fontSize(9).fillColor("#15171C").text("L'EMPLOYEUR", M, sy, { width: sw, align: "center" });
+  doc.text("L'OUVRIER", M + sw + 20, sy, { width: sw, align: "center" });
+  doc.font("Helvetica").fontSize(7.5).fillColor("#94a3b8").text("(cachet et signature)", M, sy + 13, { width: sw, align: "center" });
+  doc.text("(signature)", M + sw + 20, sy + 13, { width: sw, align: "center" });
+  doc.lineWidth(0.8).strokeColor("#cbd5e1").rect(M, sy + 26, sw, 50).stroke().rect(M + sw + 20, sy + 26, sw, 50).stroke();
+  docFooter(doc, co, "Fiche d'entrée ouvrier — pièce du registre du personnel.");
+  doc.end();
+}));
+
+
 app.get("/api/pv-reunions", requireAuth, wrap(async (req, res) => {
   const company = await cid(req);
   const where = req.query.chantier_id ? "AND p.chantier_id=$2" : "";
