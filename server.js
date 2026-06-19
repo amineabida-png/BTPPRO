@@ -455,7 +455,7 @@ app.get("/api/conges/soldes", requireAuth, wrap(async (_req, res) => {
 
 // ── CRUD générique pour les modules ──
 const RESOURCES = {
-  chantiers:      ["chantier", ["code","nom","client","ville","statut","budget_prevu","date_debut","date_fin_prevue","latitude","longitude"]],
+  chantiers:      ["chantier", ["code","nom","client","ville","statut","budget_prevu","date_debut","date_fin_prevue","latitude","longitude","type_travaux","description","adresse","quartier","titre_foncier","superficie_terrain","surface_batie","nb_niveaux","mo_representant","mo_telephone","mo_email","architecte","architecte_ordre","bet","laboratoire","topographe","maitre_oeuvre","conducteur_travaux","chef_chantier","permis_numero","permis_date","permis_autorite","permis_dossier","permis_habiter","montant_marche","tva_taux","rg_taux","avance_taux","mode_passation","date_os","delai_execution","date_reception_provisoire","date_reception_definitive","assurance_rcd_compagnie","assurance_rcd_police","assurance_trc_compagnie","assurance_trc_police","cnss_chantier","decl_ouverture"]],
   contrats:       ["contrat", ["employee_id","type","poste","salaire_base","date_debut","date_fin","actif"]],
   factures:       ["facture", ["numero","client","chantier_id","type","montant_ht","tva","montant_ttc","statut","date_emission"]],
   incidents:      ["incident", ["chantier_id","type","gravite","description","date_incident","statut","employee_id","jours_arret","mesures"]],
@@ -1331,7 +1331,58 @@ app.get("/api/chantiers/:id/os/pdf", requireAuth, wrap(async (req, res) => {
   doc.end();
 }));
 
-// ── Documents RH (attestations, solde de tout compte) ──
+// ── Fiche chantier (synthèse imprimable) ──
+app.get("/api/chantiers/:id/fiche/pdf", requireAuth, wrap(async (req, res) => {
+  const c = (await pool.query("SELECT * FROM chantier WHERE id=$1", [req.params.id])).rows[0];
+  if (!c) return res.status(404).json({ error: "Chantier introuvable" });
+  const co = await getCompany(c.company_id || (await cid(req)));
+  const M = 40, W = 515;
+  const fd = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "—");
+  const txt = (x) => (x == null || x === "" ? "—" : String(x));
+  const doc = newDoc(res, `fiche-chantier-${c.code || c.id}.pdf`);
+  doc.y = docLetterhead(doc, co, "FICHE CHANTIER", c.code || c.id, new Date().toLocaleDateString("fr-FR")) + 4;
+  doc.font("Helvetica-Bold").fontSize(13).fillColor("#15171C").text(txt(c.nom), M, doc.y, { width: W }); doc.moveDown(0.5);
+  const section = (title) => { if (doc.y > 720) doc.addPage(); doc.moveDown(0.25); doc.font("Helvetica-Bold").fontSize(9.5).fillColor("#15171C").text(title.toUpperCase(), M, doc.y, { width: W }); const yl = doc.y + 1; doc.moveTo(M, yl).lineTo(M + W, yl).strokeColor("#F5B301").lineWidth(1).stroke(); doc.moveDown(0.45); };
+  const kv = (pairs) => {
+    pairs = pairs.filter(Boolean);
+    for (let i = 0; i < pairs.length; i += 2) {
+      if (doc.y > 745) doc.addPage();
+      const y = doc.y, colW = (W - 12) / 2;
+      [pairs[i], pairs[i + 1]].forEach((p, idx) => {
+        if (!p) return; const x = M + idx * (colW + 12);
+        doc.font("Helvetica").fontSize(7.5).fillColor("#8a93a0").text(p[0], x, y, { width: colW });
+        doc.font("Helvetica-Bold").fontSize(9).fillColor("#15171C").text(txt(p[1]), x, y + 9, { width: colW });
+      });
+      doc.y = y + 25;
+    }
+  };
+  const full = (label, val) => { if (doc.y > 745) doc.addPage(); doc.font("Helvetica").fontSize(7.5).fillColor("#8a93a0").text(label, M, doc.y, { width: W }); doc.font("Helvetica").fontSize(9).fillColor("#15171C").text(txt(val), M, doc.y + 9, { width: W }); doc.moveDown(1.4); };
+
+  section("1 · Identification");
+  kv([["Code / Référence", c.code], ["Statut", c.statut], ["Type de travaux", c.type_travaux], ["Mode de passation", c.mode_passation]]);
+  if (c.description) full("Consistance des travaux", c.description);
+  section("2 · Localisation");
+  kv([["Adresse", c.adresse], ["Ville / Commune", c.ville], ["Quartier", c.quartier], ["Titre foncier / Réquisition", c.titre_foncier], ["Superficie terrain", c.superficie_terrain ? c.superficie_terrain + " m2" : null], ["Surface bâtie", c.surface_batie ? c.surface_batie + " m2" : null], ["Nombre de niveaux", c.nb_niveaux]]);
+  section("3 · Maître d'ouvrage");
+  kv([["Nom / Raison sociale", c.client], ["Représentant", c.mo_representant], ["Téléphone", c.mo_telephone], ["Email", c.mo_email]]);
+  section("4 · Intervenants");
+  kv([["Architecte", c.architecte], ["N° Ordre architecte", c.architecte_ordre], ["Bureau d'études (BET)", c.bet], ["Laboratoire", c.laboratoire], ["Topographe / Géomètre", c.topographe], ["Maître d'œuvre", c.maitre_oeuvre], ["Conducteur de travaux", c.conducteur_travaux], ["Chef de chantier", c.chef_chantier]]);
+  section("5 · Autorisations");
+  kv([["N° permis de construire", c.permis_numero], ["Date du permis", c.permis_date ? fd(c.permis_date) : null], ["Autorité délivrante", c.permis_autorite], ["N° dossier", c.permis_dossier], ["N° permis d'habiter", c.permis_habiter]]);
+  section("6 · Marché & finances");
+  const ht = Number(c.montant_marche) || 0, tx = Number(c.tva_taux) || 0;
+  kv([["Budget prévu", c.budget_prevu ? moneyFR(c.budget_prevu) : null], ["Montant marché HT", c.montant_marche ? moneyFR(ht) : null], ["TVA", c.tva_taux ? tx + " %" : null], ["Montant TTC", c.montant_marche ? moneyFR(ht * (1 + tx / 100)) : null], ["Retenue de garantie", c.rg_taux ? c.rg_taux + " %" : null], ["Avance", c.avance_taux ? c.avance_taux + " %" : null]]);
+  section("7 · Planning");
+  kv([["Ordre de service", c.date_os ? fd(c.date_os) : null], ["Date de début", c.date_debut ? fd(c.date_debut) : null], ["Délai d'exécution", c.delai_execution], ["Date de fin prévue", c.date_fin_prevue ? fd(c.date_fin_prevue) : null], ["Réception provisoire", c.date_reception_provisoire ? fd(c.date_reception_provisoire) : null], ["Réception définitive", c.date_reception_definitive ? fd(c.date_reception_definitive) : null]]);
+  section("8 · Assurances");
+  kv([["Décennale (RCD) — compagnie", c.assurance_rcd_compagnie], ["RCD — N° police", c.assurance_rcd_police], ["Tous risques chantier (TRC)", c.assurance_trc_compagnie], ["TRC — N° police", c.assurance_trc_police]]);
+  section("9 · Déclarations");
+  kv([["Déclaration CNSS de chantier", c.cnss_chantier], ["Déclaration d'ouverture", c.decl_ouverture]]);
+  docFooter(doc, co, "Fiche chantier — document interne de synthèse.");
+  doc.end();
+}));
+
+
 function rhHeader(doc, co, title) {
   return docLetterhead(doc, co, title, "", new Date().toLocaleDateString("fr-FR"));
 }

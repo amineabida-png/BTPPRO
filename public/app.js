@@ -293,7 +293,7 @@ async function editEntity(ep, fields, obj, after) {
 }
 function findCached(key, id) { return (caches[key] || []).find((x) => x.id === id); }
 function editEmp(id) { const o = findCached("employees", id); if (o) editEntity("/api/employees", [{ key: "nom", label: "Nom" }, { key: "poste", label: "Poste" }, { key: "cin", label: "CIN" }, { key: "cnss", label: "N° CNSS" }, { key: "mois_anciennete", label: "Ancienneté (mois)", type: "number" }, { key: "personnes_charge", label: "Personnes à charge", type: "number" }], o, () => { clearCache("employees"); renderEmps(); }); }
-function editChantier(id) { const o = findCached("chantiers", id); if (o) editEntity("/api/chantiers", [{ key: "code", label: "Code" }, { key: "nom", label: "Nom" }, { key: "client", label: "Client" }, { key: "ville", label: "Ville" }, { key: "budget_prevu", label: "Budget prévu", type: "number" }, { key: "statut", label: "Statut", type: "select", options: opt(["prospect", "en_cours", "suspendu", "clos"]) }], o, () => { clearCache("chantiers"); renderChantiers(); }); }
+function editChantier(id) { const o = findCached("chantiers", id); if (o) chantierForm(o); }
 function editArticle(id) { const o = findCached("articles", id); if (o) editEntity("/api/articles", [{ key: "reference", label: "Référence" }, { key: "designation", label: "Désignation" }, { key: "unite", label: "Unité" }, { key: "seuil", label: "Seuil d'alerte", type: "number" }], o, () => renderStock()); }
 function editFournisseur(id) { const o = findCached("fournisseurs", id); if (o) editEntity("/api/fournisseurs", [{ key: "raison_sociale", label: "Raison sociale" }, { key: "ice", label: "ICE" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }, { key: "email", label: "Email" }, { key: "conditions_paiement", label: "Conditions de paiement" }], o, () => renderFournisseurs()); }
 function editST(id) { const o = findCached("sous-traitants", id); if (o) editEntity("/api/sous-traitants", [{ key: "raison_sociale", label: "Raison sociale" }, { key: "specialite", label: "Spécialité" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }], o, () => renderSousTraitants()); }
@@ -845,13 +845,55 @@ async function renderChantiers() {
     <button class="btn sm" onclick="addChantier()">+ Chantier</button></div>
     <div class="card"><table><thead><tr><th>Code</th><th>Nom</th><th>Client</th><th>Ville</th><th>Statut</th><th class="r">Budget prévu</th><th></th></tr></thead><tbody>
     ${list.map((c) => `<tr><td class="mono">${c.code}</td><td>${c.nom}</td><td>${c.client || ""}</td><td>${c.ville || ""}</td><td><span class="pill">${c.statut}</span></td><td class="r mono">${fmt(c.budget_prevu)}</td>
-      <td class="r"><button class="btn sm" onclick="budgetChantier(${c.id})">Budget</button> <button class="btn sm ghost" onclick="downloadDoc('/api/chantiers/${c.id}/pv/pdf','pv-${c.code || c.id}.pdf')">PV</button> <button class="btn sm ghost" onclick="downloadDoc('/api/chantiers/${c.id}/os/pdf','os-${c.code || c.id}.pdf')">OS</button> <button class="btn sm ghost" onclick="editChantier(${c.id})">✏️</button> <button class="btn sm danger" onclick="delChantier(${c.id})">×</button></td></tr>`).join("")}
+      <td class="r"><button class="btn sm" onclick="budgetChantier(${c.id})">Budget</button> <button class="btn sm ghost" onclick="openDoc('/api/chantiers/${c.id}/fiche/pdf')">📋 Fiche</button> <button class="btn sm ghost" onclick="downloadDoc('/api/chantiers/${c.id}/pv/pdf','pv-${c.code || c.id}.pdf')">PV</button> <button class="btn sm ghost" onclick="downloadDoc('/api/chantiers/${c.id}/os/pdf','os-${c.code || c.id}.pdf')">OS</button> <button class="btn sm ghost" onclick="editChantier(${c.id})">✏️</button> <button class="btn sm danger" onclick="delChantier(${c.id})">×</button></td></tr>`).join("")}
     </tbody></table></div>`;
 }
-async function addChantier() {
-  const d = await modalForm("Nouveau chantier", [{ key: "code", label: "Code" }, { key: "nom", label: "Nom" }, { key: "client", label: "Client" }, { key: "ville", label: "Ville" }, { key: "budget_prevu", label: "Budget prévu", type: "number" }, { key: "statut", label: "Statut", type: "select", options: opt(["prospect", "en_cours", "suspendu", "clos"]) }]);
-  if (!d) return; await api("/api/chantiers", { method: "POST", body: JSON.stringify(d) }); clearCache("chantiers"); renderChantiers();
+const CH_TYPES = ["", "Construction neuve", "Extension / Surélévation", "Réhabilitation / Rénovation", "Démolition", "VRD / Voirie", "Aménagement", "Gros œuvre", "Second œuvre", "Autre"];
+const CH_STATUTS = ["prospect", "en_preparation", "en_cours", "suspendu", "receptionne", "clos"];
+const CH_PASSATION = ["", "Gré à gré", "Appel d'offres", "Marché négocié", "Bon de commande"];
+const CH_KEYS = ["code", "nom", "type_travaux", "statut", "description", "adresse", "ville", "quartier", "titre_foncier", "superficie_terrain", "surface_batie", "nb_niveaux", "client", "mo_representant", "mo_telephone", "mo_email", "architecte", "architecte_ordre", "bet", "laboratoire", "topographe", "maitre_oeuvre", "conducteur_travaux", "chef_chantier", "permis_numero", "permis_date", "permis_autorite", "permis_dossier", "permis_habiter", "budget_prevu", "montant_marche", "tva_taux", "rg_taux", "avance_taux", "mode_passation", "date_os", "date_debut", "delai_execution", "date_fin_prevue", "date_reception_provisoire", "date_reception_definitive", "assurance_rcd_compagnie", "assurance_rcd_police", "assurance_trc_compagnie", "assurance_trc_police", "cnss_chantier", "decl_ouverture"];
+
+function chantierForm(o) {
+  o = o || {}; const v = (k) => (o[k] != null ? String(o[k]).replace(/"/g, "&quot;") : "");
+  const inp = (k, l, t = "text") => `<div class="field"><label>${l}</label><input id="cf-${k}" type="${t}" value="${v(k)}"></div>`;
+  const ta = (k, l) => `<div class="field" style="grid-column:1/-1"><label>${l}</label><textarea id="cf-${k}" rows="2" style="width:100%;font:inherit;padding:8px;border:1px solid var(--line,#d7dde5);border-radius:8px;resize:vertical">${o[k] != null ? o[k] : ""}</textarea></div>`;
+  const sel = (k, l, opts) => `<div class="field"><label>${l}</label><select id="cf-${k}">${opts.map((x) => `<option value="${x}" ${v(k) === x ? "selected" : ""}>${x || "—"}</option>`).join("")}</select></div>`;
+  V().innerHTML = `<div class="bar"><div><h1>${o.id ? "Modifier le chantier" : "Nouveau chantier"}</h1><div class="sub">Fiche chantier complète — seuls le code et l'intitulé sont obligatoires.</div></div>
+    <div style="display:flex;gap:8px"><button class="btn ghost" onclick="renderChantiers()">← Retour</button><button class="btn" onclick="saveChantier(${o.id || 0})">💾 Enregistrer</button></div></div>
+    <div class="card">
+      <div class="colhead">1 · Identification</div>
+      <div class="form">${inp("code", "Code / Référence *")}${inp("nom", "Intitulé du projet *")}${sel("type_travaux", "Type de travaux", CH_TYPES)}${sel("statut", "Statut", CH_STATUTS)}</div>
+      <div class="form">${ta("description", "Consistance / description des travaux")}</div>
+      <div class="colhead">2 · Localisation</div>
+      <div class="form">${inp("adresse", "Adresse")}${inp("ville", "Ville / Commune")}${inp("quartier", "Quartier / Arrondissement")}${inp("titre_foncier", "Titre foncier / Réquisition")}${inp("superficie_terrain", "Superficie terrain (m²)", "number")}${inp("surface_batie", "Surface bâtie (m²)", "number")}${inp("nb_niveaux", "Nombre de niveaux", "number")}</div>
+      <div class="colhead">3 · Maître d'ouvrage (client)</div>
+      <div class="form">${inp("client", "Nom / Raison sociale")}${inp("mo_representant", "Représentant")}${inp("mo_telephone", "Téléphone")}${inp("mo_email", "Email")}</div>
+      <div class="colhead">4 · Intervenants</div>
+      <div class="form">${inp("architecte", "Architecte")}${inp("architecte_ordre", "N° Ordre architecte")}${inp("bet", "Bureau d'études (BET agréé)")}${inp("laboratoire", "Laboratoire (essais/contrôle)")}${inp("topographe", "Topographe / Géomètre")}${inp("maitre_oeuvre", "Maître d'œuvre")}${inp("conducteur_travaux", "Conducteur de travaux")}${inp("chef_chantier", "Chef de chantier")}</div>
+      <div class="colhead">5 · Autorisations</div>
+      <div class="form">${inp("permis_numero", "N° permis de construire")}${inp("permis_date", "Date du permis", "date")}${inp("permis_autorite", "Autorité (commune / agence urbaine)")}${inp("permis_dossier", "N° dossier")}${inp("permis_habiter", "N° permis d'habiter")}</div>
+      <div class="colhead">6 · Marché & finances</div>
+      <div class="form">${inp("budget_prevu", "Budget prévu (MAD)", "number")}${inp("montant_marche", "Montant du marché HT", "number")}${inp("tva_taux", "TVA (%)", "number")}${inp("rg_taux", "Retenue de garantie (%)", "number")}${inp("avance_taux", "Avance (%)", "number")}${sel("mode_passation", "Mode de passation", CH_PASSATION)}</div>
+      <div class="colhead">7 · Planning</div>
+      <div class="form">${inp("date_os", "Date ordre de service", "date")}${inp("date_debut", "Date de début", "date")}${inp("delai_execution", "Délai d'exécution (ex : 12 mois)")}${inp("date_fin_prevue", "Date de fin prévue", "date")}${inp("date_reception_provisoire", "Réception provisoire", "date")}${inp("date_reception_definitive", "Réception définitive", "date")}</div>
+      <div class="colhead">8 · Assurances</div>
+      <div class="form">${inp("assurance_rcd_compagnie", "Décennale (RCD) — compagnie")}${inp("assurance_rcd_police", "RCD — N° police")}${inp("assurance_trc_compagnie", "Tous risques chantier (TRC) — compagnie")}${inp("assurance_trc_police", "TRC — N° police")}</div>
+      <div class="colhead">9 · Déclarations</div>
+      <div class="form">${inp("cnss_chantier", "Déclaration CNSS de chantier (N°)")}${inp("decl_ouverture", "Déclaration d'ouverture de chantier")}</div>
+      <div class="mactions"><button class="btn ghost" onclick="renderChantiers()">Annuler</button><button class="btn" onclick="saveChantier(${o.id || 0})">💾 Enregistrer</button></div>
+    </div>`;
 }
+async function saveChantier(id) {
+  const g = (k) => { const e = el("cf-" + k); return e ? e.value : ""; };
+  const body = {}; CH_KEYS.forEach((k) => { const val = g(k); if (val !== undefined && val !== "") body[k] = val; });
+  if (!body.code || !body.nom) { alert("Le code et l'intitulé du projet sont obligatoires."); return; }
+  try {
+    if (id) await api("/api/chantiers/" + id, { method: "PUT", body: JSON.stringify(body) });
+    else await api("/api/chantiers", { method: "POST", body: JSON.stringify(body) });
+    clearCache("chantiers"); renderChantiers();
+  } catch (e) { alert(e.message); }
+}
+function addChantier() { chantierForm({ statut: "prospect", tva_taux: 20 }); }
 async function delChantier(id) { if (confirm("Supprimer ?")) { await api("/api/chantiers/" + id, { method: "DELETE" }); clearCache("chantiers"); renderChantiers(); } }
 async function budgetChantier(id) {
   const b = await api(`/api/chantiers/${id}/budget`);
