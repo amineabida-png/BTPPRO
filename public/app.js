@@ -2069,7 +2069,7 @@ async function renderEcheances() {
   // groupe par mois
   const groups = {};
   list.forEach((e) => { const d = new Date(e.date_echeance); const k = d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }); (groups[k] = groups[k] || []).push(e); });
-  V().innerHTML = `<div class="bar"><div><h1>Échéancier fiscal & social</h1><div class="sub">CNSS avant le 10 · IR & TVA avant le 20 · acomptes IS 31/03-30/06-30/09-31/12 · déclaration 69-21 trimestrielle</div></div>
+  V().innerHTML = `<div class="bar"><div><h1>Échéancier fiscal & social</h1><div class="sub">CNSS avant le 10 · IR avant le 20 · TVA avant la fin du mois suivant (télédéclaration SIMPL) · acomptes IS 31/03-30/06-30/09-31/12 · déclaration 69-21 trimestrielle</div></div>
     <div style="display:flex;gap:8px"><button class="btn sm ghost" onclick="addEcheance()">+ Échéance</button><button class="btn sm" onclick="genererEcheancier()">⚙️ Générer l'échéancier</button></div></div>
     <div class="kpis">
       <div class="kpi"><div class="kpi-l">À venir (30 j)</div><div class="kpi-v">${r.aVenir}</div></div>

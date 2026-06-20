@@ -2281,8 +2281,9 @@ app.post("/api/echeances/generer", requireAuth, wrap(async (req, res) => {
       items.push(["CNSS", `CNSS / Damancom — paie ${moisNom(prev)}`, new Date(m.getFullYear(), mm, 10)]);
       items.push(["IR", `IR retenue à la source — ${moisNom(prev)}`, new Date(m.getFullYear(), mm, 20)]);
     }
-    if (tva === "mensuelle") items.push(["TVA", `TVA mensuelle — ${moisNom(prev)}`, new Date(m.getFullYear(), mm, 20)]);
-    else if ([0, 3, 6, 9].includes(mm)) items.push(["TVA", `TVA trimestrielle — trimestre précédent`, new Date(m.getFullYear(), mm, 20)]);
+    const finMois = new Date(m.getFullYear(), mm + 1, 0).getDate(); // dernier jour du mois (télédéclaration SIMPL)
+    if (tva === "mensuelle") items.push(["TVA", `TVA mensuelle — ${moisNom(prev)}`, new Date(m.getFullYear(), mm, finMois)]);
+    else if ([0, 3, 6, 9].includes(mm)) items.push(["TVA", `TVA trimestrielle — trimestre précédent`, new Date(m.getFullYear(), mm, finMois)]);
     if ([2, 5, 8, 11].includes(mm)) { const lastDay = new Date(m.getFullYear(), mm + 1, 0).getDate(); const tnum = { 2: 1, 5: 2, 8: 3, 11: 4 }[mm]; items.push(["IS", `Acompte provisionnel IS — ${tnum}er/e acompte`, new Date(m.getFullYear(), mm, lastDay)]); }
     if (mm === 2) items.push(["IS", `Déclaration annuelle IS + régularisation`, new Date(m.getFullYear(), 2, 31)]);
     if ([0, 3, 6, 9].includes(mm)) { const lastDay = new Date(m.getFullYear(), mm + 1, 0).getDate(); items.push(["69-21", `Déclaration trimestrielle délais de paiement (loi 69-21)`, new Date(m.getFullYear(), mm, lastDay)]); }
