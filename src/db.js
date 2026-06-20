@@ -671,6 +671,17 @@ async function initDb() {
        WHERE raison_sociale = 'ARAB AGENCEMENT SARL'`);
   } catch (e) { /* champs absents : ignoré */ }
 
+  // Nettoyage unique des échéances fiscales en double (suite au changement de date TVA)
+  try {
+    const done = (await pool.query("SELECT 1 FROM app_meta WHERE key='echeance_dedup_v1'")).rowCount;
+    if (!done) {
+      await pool.query(`DELETE FROM echeance e WHERE auto=true AND id NOT IN (
+          SELECT DISTINCT ON (company_id, type, libelle) id FROM echeance WHERE auto=true
+          ORDER BY company_id, type, libelle, (statut='fait') DESC, date_echeance DESC)`);
+      await pool.query("INSERT INTO app_meta (key,value) VALUES ('echeance_dedup_v1', now()::text) ON CONFLICT (key) DO NOTHING");
+    }
+  } catch (e) { /* table absente au tout premier boot : ignoré */ }
+
   await seedIfEmpty("app_user", async () => {
     const email = process.env.ADMIN_EMAIL || "admin@btppro.ma";
     const pwd = process.env.ADMIN_PASSWORD || "btppro2026";

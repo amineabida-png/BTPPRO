@@ -2288,11 +2288,17 @@ app.post("/api/echeances/generer", requireAuth, wrap(async (req, res) => {
     if (mm === 2) items.push(["IS", `Déclaration annuelle IS + régularisation`, new Date(m.getFullYear(), 2, 31)]);
     if ([0, 3, 6, 9].includes(mm)) { const lastDay = new Date(m.getFullYear(), mm + 1, 0).getDate(); items.push(["69-21", `Déclaration trimestrielle délais de paiement (loi 69-21)`, new Date(m.getFullYear(), mm, lastDay)]); }
   }
+  // Nettoyage des doublons auto pour cette société (garde le 'fait' sinon la date la plus tardive)
+  await pool.query(`DELETE FROM echeance WHERE company_id=$1 AND auto=true AND id NOT IN (
+      SELECT DISTINCT ON (type, libelle) id FROM echeance WHERE company_id=$1 AND auto=true
+      ORDER BY type, libelle, (statut='fait') DESC, date_echeance DESC)`, [company]);
   let added = 0;
   for (const [type, libelle, date] of items) {
     const ds = date.toISOString().slice(0, 10);
-    const exists = (await pool.query("SELECT 1 FROM echeance WHERE company_id=$1 AND type=$2 AND date_echeance=$3 AND libelle=$4", [company, type, ds, libelle])).rowCount;
-    if (!exists) { await pool.query("INSERT INTO echeance (company_id,type,libelle,date_echeance,auto) VALUES ($1,$2,$3,$4,true)", [company, type, libelle, ds]); added++; }
+    // dédoublonnage par (type, libelle) : si l'échéance existe déjà, on corrige sa date (sauf si déjà faite)
+    const ex = (await pool.query("SELECT id, statut FROM echeance WHERE company_id=$1 AND type=$2 AND libelle=$3 AND auto=true", [company, type, libelle])).rows[0];
+    if (ex) { if (ex.statut !== "fait") await pool.query("UPDATE echeance SET date_echeance=$1 WHERE id=$2", [ds, ex.id]); }
+    else { await pool.query("INSERT INTO echeance (company_id,type,libelle,date_echeance,auto) VALUES ($1,$2,$3,$4,true)", [company, type, libelle, ds]); added++; }
   }
   res.json({ ok: true, added });
 }));
