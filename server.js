@@ -35,9 +35,14 @@ function domainOf(p) {
   if (p.startsWith("/api/documents") || p.startsWith("/api/signatures")) return "ged";
   if (p.startsWith("/api/devis") || p.startsWith("/api/ouvrages") || p.startsWith("/api/composants")) return "devis";
   if (p.startsWith("/api/factures")) return "facturation";
-  if (p.startsWith("/api/paiements") || p.startsWith("/api/tresorerie")) return "facturation";
+  if (p.startsWith("/api/paiements") || p.startsWith("/api/tresorerie") || p.startsWith("/api/encaissements") || p.startsWith("/api/creances") || p.startsWith("/api/garanties")) return "facturation";
+  if (p.startsWith("/api/gasoil")) return "achats";
+  if (p.startsWith("/api/accidents")) return "rh";
+  if (p.startsWith("/api/echeances")) return "rentabilite";
+  if (p.startsWith("/api/appels-offres")) return "facturation";
+  if (p.startsWith("/api/maintenances")) return "chantiers";
   if (p.startsWith("/api/pointages") || p.startsWith("/api/taches")) return "chantiers";
-  if (p.startsWith("/api/materiel") || p.startsWith("/api/rapports") || p.startsWith("/api/pv-reunions")) return "chantiers";
+  if (p.startsWith("/api/materiel") || p.startsWith("/api/rapports") || p.startsWith("/api/pv-reunions") || p.startsWith("/api/caisse")) return "chantiers";
   if (p.startsWith("/api/alertes")) return null;
   if (p.startsWith("/api/compta")) return "rentabilite";
   if (p.startsWith("/api/bordereau")) return "devis";
@@ -174,7 +179,7 @@ app.get("/api/companies/:id", requireAuth, wrap(async (req, res) => {
 }));
 app.put("/api/companies/:id", requireAuth, wrap(async (req, res) => {
   if (req.user.role !== "DIRECTEUR") return res.status(403).json({ error: "Réservé au Directeur" });
-  const cols = ["raison_sociale","ice","adresse","ville","telephone","email","rc","if_fiscal","patente","cnss","rib","logo","tva_taux","devis_format","facture_format","devis_compteur","facture_compteur"]
+  const cols = ["raison_sociale","ice","adresse","ville","telephone","email","rc","if_fiscal","patente","cnss","rib","logo","tva_taux","forme_juridique","capital","devis_format","facture_format","devis_compteur","facture_compteur"]
     .filter((k) => req.body[k] !== undefined);
   if (!cols.length) return res.status(400).json({ error: "Aucune donnée" });
   const set = cols.map((c, i) => `${c}=$${i + 2}`).join(",");
@@ -473,7 +478,7 @@ const RESOURCES = {
   clients:        ["client", ["raison_sociale","ice","contact","telephone","email","adresse","ville","rc","if_fiscal","patente","type"]],
   "sous-traitants": ["sous_traitant", ["raison_sociale","specialite","contact","telephone"]],
   "situations-st":  ["soustraitant_situation", ["sous_traitant_id","chantier_id","montant","statut","date_situation"]],
-  conges:         ["conge", ["employee_id","type","date_debut","date_fin","jours","statut","motif"]],
+  conges:         ["conge", ["employee_id","type","date_debut","date_fin","jours","statut","motif","remplacant","justificatif","paye","date_demande"]],
   affectations:   ["affectation", ["chantier_id","employee_id","role","date_debut","date_fin"]],
   evaluations:    ["evaluation", ["employee_id","date_eval","note","evaluateur","commentaire"]],
   pointages:      ["pointage", ["employee_id","chantier_id","date_jour","heures","heures_sup"]],
@@ -1054,8 +1059,13 @@ function docLetterhead(doc, co, title, numero, dateStr) {
   const infoW = (M + W - 168) - infoX - 14;
   doc.fillColor("#15171C").font("Helvetica-Bold").fontSize(14).text(co.raison_sociale || "Société", infoX, 42, { width: infoW });
   doc.font("Helvetica").fontSize(8.5).fillColor("#5A6473");
-  const lines = [co.adresse, co.ville, [co.telephone, co.email].filter(Boolean).join(" · ")].filter(Boolean);
-  doc.text(lines.join("\n"), infoX, 64, { width: infoW });
+  const formeCap = [co.forme_juridique, co.capital ? "au capital de " + co.capital + " DH" : null].filter(Boolean).join(" ");
+  const addr = [co.adresse, co.ville].filter(Boolean).join(", ");
+  const contact = [co.telephone ? "Tél. " + co.telephone : null, co.email].filter(Boolean).join(" · ");
+  const lines = [formeCap, addr, contact].filter(Boolean);
+  doc.text(lines.join("\n"), infoX, 63, { width: infoW });
+  const legal = [co.ice ? "ICE " + co.ice : null, co.rc ? "RC " + co.rc : null, co.if_fiscal ? "IF " + co.if_fiscal : null, co.patente ? "Patente " + co.patente : null].filter(Boolean).join(" · ");
+  if (legal) doc.fontSize(7.5).fillColor("#8A93A2").text(legal, infoX, 63 + lines.length * 10.5 + 1, { width: infoW });
   // Cartouche document (droite) — taille du titre adaptée à sa longueur
   const tlen = (title || "").length;
   const tsize = tlen > 22 ? 10 : tlen > 16 ? 11.5 : 13;
@@ -1191,17 +1201,41 @@ app.get("/api/factures/:id/pdf", requireAuth, wrap(async (req, res) => {
   const sign = isAvoir ? -1 : 1;
   const ht = Math.abs(Number(f.montant_ht)), tva = Math.abs(Number(f.tva)), ttc = Math.abs(Number(f.montant_ttc)), rg = Number(f.retenue_garantie) || 0, net = Number(f.net_a_payer) || ttc;
   const M = 40, W = 515;
-  doc.rect(M, y, W, 22).fill("#15171C");
-  doc.fill("#fff").font("Helvetica-Bold").fontSize(9).text("DÉSIGNATION", M + 8, y + 7).text("MONTANT HT", M + W - 130, y + 7, { width: 122, align: "right" });
-  y += 22;
-  doc.font("Helvetica").fontSize(9).fillColor("#15171C");
-  const desc = isSit ? `Travaux exécutés — situation à ${f.avancement || 0} % (déduction des situations antérieures)`
-    : f.type === "acompte" ? "Acompte sur travaux à venir"
-    : isAvoir ? (f.motif || "Avoir / note de crédit") : "Prestations / travaux";
-  doc.text(desc, M + 8, y + 6, { width: 340 }).text((isAvoir ? "-" : "") + moneyFR(ht).replace(" MAD", ""), M + W - 130, y + 6, { width: 122, align: "right" });
-  y += 30; doc.rect(M, y, W, 0.6).fill("#e3e7ec"); y += 14;
+  const lignesF = Array.isArray(f.contenu) ? f.contenu.filter((l) => l && (l.designation || l.pu)) : [];
+  if (lignesF.length) {
+    doc.rect(M, y, W, 20).fill("#15171C");
+    doc.fill("#fff").font("Helvetica-Bold").fontSize(8.5)
+      .text("DÉSIGNATION", M + 8, y + 6, { width: 250 })
+      .text("Qté", M + 262, y + 6, { width: 48, align: "right" })
+      .text("P.U. HT", M + 315, y + 6, { width: 85, align: "right" })
+      .text("TOTAL HT", M + W - 95, y + 6, { width: 87, align: "right" });
+    y += 20;
+    doc.font("Helvetica").fontSize(8.5);
+    lignesF.forEach((l, i) => {
+      const q = Number(l.quantite) || 0, pu = Number(l.pu) || 0, tot = q * pu;
+      const dh = Math.max(16, doc.heightOfString(l.designation || "", { width: 250 }) + 6);
+      if (y + dh > 740) { doc.addPage(); y = 50; }
+      if (i % 2) doc.rect(M, y, W, dh).fill("#F7F8FA");
+      doc.fillColor("#15171C").text(l.designation || "", M + 8, y + 4, { width: 250 })
+        .text(q ? String(Math.round(q * 100) / 100) : "", M + 262, y + 4, { width: 48, align: "right" })
+        .text(moneyFR(pu).replace(" MAD", ""), M + 315, y + 4, { width: 85, align: "right" })
+        .text(moneyFR(tot).replace(" MAD", ""), M + W - 95, y + 4, { width: 87, align: "right" });
+      y += dh;
+    });
+    y += 8; doc.rect(M, y, W, 0.6).fill("#e3e7ec"); y += 14;
+  } else {
+    doc.rect(M, y, W, 22).fill("#15171C");
+    doc.fill("#fff").font("Helvetica-Bold").fontSize(9).text("DÉSIGNATION", M + 8, y + 7).text("MONTANT HT", M + W - 130, y + 7, { width: 122, align: "right" });
+    y += 22;
+    doc.font("Helvetica").fontSize(9).fillColor("#15171C");
+    const desc = isSit ? `Travaux exécutés — situation à ${f.avancement || 0} % (déduction des situations antérieures)`
+      : f.type === "acompte" ? "Acompte sur travaux à venir"
+      : isAvoir ? (f.motif || "Avoir / note de crédit") : (f.objet || "Prestations / travaux");
+    doc.text(desc, M + 8, y + 6, { width: 340 }).text((isAvoir ? "-" : "") + moneyFR(ht).replace(" MAD", ""), M + W - 130, y + 6, { width: 122, align: "right" });
+    y += 30; doc.rect(M, y, W, 0.6).fill("#e3e7ec"); y += 14;
+  }
   const s = (v) => sign * v;
-  const rows = [["Montant HT", s(ht)], ["TVA (20%)", s(tva)], [isAvoir ? "MONTANT TTC AVOIR" : "Montant TTC", s(ttc), true]];
+  const rows = [["Montant HT", s(ht)], [`TVA (${f.tva_taux != null ? f.tva_taux : 20}%)`, s(tva)], [isAvoir ? "MONTANT TTC AVOIR" : "Montant TTC", s(ttc), true]];
   if (rg > 0) { rows.push(["Retenue de garantie", -rg]); rows.push(["NET À PAYER", net, true]); }
   y = docTotals(doc, y, rows);
   const mention = isSit ? `Net à payer : ${moneyFR(net)}. Retenue de garantie ${f.rg_taux || 0} % conservée jusqu'à réception définitive.`
@@ -1213,7 +1247,27 @@ app.get("/api/factures/:id/pdf", requireAuth, wrap(async (req, res) => {
 
 // ══════════════ NOUVEAUX DOCUMENTS ══════════════
 
-// ── Facture d'acompte (depuis un devis) ──
+// ── Facture directe (sans devis) : lignes saisies à la main ──
+app.post("/api/factures/directe", requireAuth, wrap(async (req, res) => {
+  const b = req.body || {};
+  const company = await cid(req);
+  const lignes = (b.contenu || []).filter((l) => l && (l.designation || l.pu));
+  const ht = lignes.reduce((s, l) => s + (Number(l.quantite) || 0) * (Number(l.pu) || 0), 0);
+  const tauxTva = b.tva_taux != null && b.tva_taux !== "" ? Number(b.tva_taux) : 20;
+  const tva = +(ht * tauxTva / 100).toFixed(2);
+  const ttc = +(ht + tva).toFixed(2);
+  const rgTaux = Number(b.rg_taux) || 0;
+  const rg = +(ht * rgTaux / 100).toFixed(2);
+  const net = +(ttc - rg).toFixed(2);
+  const num = b.numero || await nextNumero(pool, company, "facture");
+  const f = (await pool.query(
+    `INSERT INTO facture (numero,client,client_ice,chantier_id,objet,type,montant_ht,tva_taux,tva,montant_ttc,rg_taux,retenue_garantie,net_a_payer,contenu,date_emission,statut,company_id)
+     VALUES ($1,$2,$3,$4,$5,'facture',$6,$7,$8,$9,$10,$11,$12,$13,$14,'emise',$15) RETURNING *`,
+    [num, b.client || null, b.client_ice || null, b.chantier_id || null, b.objet || null, +ht.toFixed(2), tauxTva, tva, ttc, rgTaux, rg, net, JSON.stringify(lignes), b.date_emission || new Date(), company])).rows[0];
+  res.status(201).json(f);
+}));
+
+
 app.post("/api/factures/acompte", requireAuth, wrap(async (req, res) => {
   const devis_id = Number(req.body?.devis_id), pct = Number(req.body?.pct) || 30;
   const d = (await pool.query("SELECT * FROM devis WHERE id=$1", [devis_id])).rows[0];
@@ -1814,6 +1868,503 @@ app.get("/api/pv-reunions/:id/pdf", requireAuth, wrap(async (req, res) => {
 }));
 
 
+// ══════════════ CAISSE / DÉPENSES DE CHANTIER ══════════════
+const CAISSE_CATS = ["matériaux", "carburant", "main_oeuvre", "transport", "location", "sous_traitance", "petit_outillage", "restauration", "administratif", "divers"];
+app.get("/api/caisse", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const params = [company]; let where = "m.company_id=$1";
+  if (req.query.chantier_id) { params.push(req.query.chantier_id); where += ` AND m.chantier_id=$${params.length}`; }
+  const rows = (await pool.query(
+    `SELECT m.*, c.code AS chantier_code, c.nom AS chantier_nom
+     FROM caisse_mouvement m LEFT JOIN chantier c ON c.id=m.chantier_id
+     WHERE ${where} ORDER BY m.date_mouvement DESC, m.id DESC`, params)).rows;
+  const appro = rows.filter((r) => r.type === "approvisionnement").reduce((s, r) => s + Number(r.montant), 0);
+  const depense = rows.filter((r) => r.type === "depense").reduce((s, r) => s + Number(r.montant), 0);
+  const parCat = {};
+  rows.filter((r) => r.type === "depense").forEach((r) => { parCat[r.categorie || "divers"] = (parCat[r.categorie || "divers"] || 0) + Number(r.montant); });
+  res.json({ mouvements: rows, resume: { approvisionnements: appro, depenses: depense, solde: appro - depense, parCategorie: parCat } });
+}));
+app.post("/api/caisse", requireAuth, wrap(async (req, res) => {
+  const b = req.body || {};
+  const company = await cid(req);
+  const r = (await pool.query(
+    `INSERT INTO caisse_mouvement (company_id,chantier_id,type,date_mouvement,categorie,description,beneficiaire,montant,mode_paiement,reference_piece,tva_recuperable)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+    [company, b.chantier_id || null, b.type || "depense", b.date_mouvement || new Date(), b.categorie || null, b.description || null, b.beneficiaire || null, b.montant || 0, b.mode_paiement || "espèces", b.reference_piece || null, b.tva_recuperable === true || b.tva_recuperable === "true"])).rows[0];
+  res.status(201).json(r);
+}));
+app.delete("/api/caisse/:id", requireAuth, wrap(async (req, res) => { await pool.query("DELETE FROM caisse_mouvement WHERE id=$1", [req.params.id]); res.json({ ok: true }); }));
+app.get("/api/caisse/pdf", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const co = await getCompany(company);
+  const params = [company]; let where = "m.company_id=$1";
+  let ch = null;
+  if (req.query.chantier_id) { params.push(req.query.chantier_id); where += ` AND m.chantier_id=$${params.length}`; ch = (await pool.query("SELECT * FROM chantier WHERE id=$1", [req.query.chantier_id])).rows[0]; }
+  const rows = (await pool.query(`SELECT m.*, c.code AS chantier_code FROM caisse_mouvement m LEFT JOIN chantier c ON c.id=m.chantier_id WHERE ${where} ORDER BY m.date_mouvement, m.id`, params)).rows;
+  const M = 40, W = 515;
+  const fd = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "");
+  const doc = newDoc(res, `journal-caisse${ch ? "-" + ch.code : ""}.pdf`);
+  doc.y = docLetterhead(doc, co, "JOURNAL DE CAISSE", ch ? ch.code : "Général", new Date().toLocaleDateString("fr-FR")) + 6;
+  if (ch) { doc.font("Helvetica-Bold").fontSize(10).fillColor("#15171C").text("Chantier : " + ch.nom, M, doc.y); doc.moveDown(0.6); }
+  const cols = [["Date", 58], ["Catégorie", 80], ["Description", 150], ["Bénéf.", 70], ["Mode", 52], ["Entrée", 52], ["Sortie", 53]];
+  let hy = doc.y; doc.rect(M, hy, W, 16).fill("#15171C"); let cx = M;
+  cols.forEach((c) => { doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#fff").text(c[0], cx + 3, hy + 5, { width: c[1] - 4 }); cx += c[1]; });
+  doc.y = hy + 16;
+  let appro = 0, dep = 0;
+  rows.forEach((m, i) => {
+    const isAppro = m.type === "approvisionnement"; const mt = Number(m.montant);
+    if (isAppro) appro += mt; else dep += mt;
+    const h = 15; if (doc.y + h > 770) doc.addPage();
+    const ry = doc.y; if (i % 2) doc.rect(M, ry, W, h).fill("#F7F8FA");
+    cx = M; const put = (t, w, al) => { doc.font("Helvetica").fontSize(7.5).fillColor("#15171C").text(t || "", cx + 3, ry + 4, { width: w - 5, align: al || "left" }); cx += w; };
+    put(fd(m.date_mouvement), cols[0][1]); put((m.categorie || "").replace(/_/g, " "), cols[1][1]); put(m.description, cols[2][1]); put(m.beneficiaire, cols[3][1]); put(m.mode_paiement, cols[4][1]);
+    put(isAppro ? moneyFR(mt).replace(" MAD", "") : "", cols[5][1], "right"); put(!isAppro ? moneyFR(mt).replace(" MAD", "") : "", cols[6][1], "right");
+    doc.y = ry + h;
+  });
+  doc.moveDown(0.6);
+  const s = (n) => moneyFR(n);
+  [["Total entrées (approvisionnements)", s(appro)], ["Total sorties (dépenses)", s(dep)], ["SOLDE DE CAISSE", s(appro - dep), true]].forEach((r) => {
+    const yy = doc.y; if (r[2]) doc.rect(M + W - 250, yy - 2, 250, 18).fill("#15171C");
+    doc.font(r[2] ? "Helvetica-Bold" : "Helvetica").fontSize(r[2] ? 10 : 9).fillColor(r[2] ? "#F5B301" : "#15171C").text(r[0], M + W - 250, yy + 2, { width: 150 });
+    doc.fillColor(r[2] ? "#fff" : "#15171C").text(r[1], M + W - 100, yy + 2, { width: 100, align: "right" });
+    doc.y = yy + (r[2] ? 20 : 15);
+  });
+  docFooter(doc, co, "Journal de caisse — pièces justificatives à conserver 10 ans (art. 211 CGI).");
+  doc.end();
+}));
+
+// ══════════════ ENCAISSEMENTS & RELANCES (loi 69-21) ══════════════
+function detteFacture(f) { const net = Number(f.net_a_payer) || 0; return net > 0 ? net : Number(f.montant_ttc) || 0; }
+function echeanceFacture(f) { const base = f.date_emission ? new Date(f.date_emission) : new Date(); const d = new Date(base); d.setDate(d.getDate() + (Number(f.delai_paiement) || 60)); return d; }
+// Amende pécuniaire loi 69-21 (au profit du Trésor) : 1er mois = TTC × taux directeur BAM,
+// puis +0,85 % par mois ou fraction de mois supplémentaire ; base TTC ; arrondi au dirham supérieur.
+const TAUX_DIRECTEUR_BAM = 0.0225; // BAM, maintenu à 2,25 % (réunion du 17/03/2026)
+function penaliteRetard(ttc, joursRetard) {
+  if (joursRetard <= 0) return 0;
+  const mois = Math.ceil(joursRetard / 30); // tout mois entamé compte pour un mois entier
+  const taux = TAUX_DIRECTEUR_BAM + Math.max(0, mois - 1) * 0.0085;
+  return Math.ceil((Number(ttc) || 0) * taux); // arrondi au dirham supérieur
+}
+app.get("/api/encaissements", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const rows = (await pool.query(
+    `SELECT e.*, f.numero AS facture_numero FROM encaissement e LEFT JOIN facture f ON f.id=e.facture_id
+     WHERE e.company_id=$1 ORDER BY e.date_encaissement DESC, e.id DESC`, [company])).rows;
+  res.json(rows);
+}));
+app.post("/api/encaissements", requireAuth, wrap(async (req, res) => {
+  const b = req.body || {};
+  const company = await cid(req);
+  let client = b.client || null;
+  if (b.facture_id && !client) { const f = (await pool.query("SELECT client FROM facture WHERE id=$1", [b.facture_id])).rows[0]; if (f) client = f.client; }
+  const r = (await pool.query(
+    `INSERT INTO encaissement (company_id,facture_id,client,date_encaissement,montant,mode_paiement,reference)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [company, b.facture_id || null, client, b.date_encaissement || new Date(), b.montant || 0, b.mode_paiement || "virement", b.reference || null])).rows[0];
+  // marque la facture payée si soldée
+  if (b.facture_id) {
+    const f = (await pool.query("SELECT * FROM facture WHERE id=$1", [b.facture_id])).rows[0];
+    if (f) { const enc = Number((await pool.query("SELECT COALESCE(SUM(montant),0) s FROM encaissement WHERE facture_id=$1", [b.facture_id])).rows[0].s);
+      if (enc >= detteFacture(f) - 0.01) await pool.query("UPDATE facture SET statut='payee' WHERE id=$1", [b.facture_id]); }
+  }
+  res.status(201).json(r);
+}));
+app.delete("/api/encaissements/:id", requireAuth, wrap(async (req, res) => { await pool.query("DELETE FROM encaissement WHERE id=$1", [req.params.id]); res.json({ ok: true }); }));
+app.get("/api/creances", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const factures = (await pool.query(
+    `SELECT * FROM facture WHERE company_id=$1 AND COALESCE(type,'facture') NOT IN ('avoir') ORDER BY date_emission`, [company])).rows;
+  const encByFac = {};
+  (await pool.query("SELECT facture_id, COALESCE(SUM(montant),0) s FROM encaissement WHERE company_id=$1 GROUP BY facture_id", [company])).rows.forEach((r) => { encByFac[r.facture_id] = Number(r.s); });
+  const now = new Date();
+  const buckets = { b0_30: 0, b30_60: 0, b60_90: 0, b90: 0 };
+  let totalDu = 0, totalRetard = 0, totalPenalite = 0;
+  const lignes = [];
+  for (const f of factures) {
+    const due = detteFacture(f); const enc = encByFac[f.id] || 0; const reste = +(due - enc).toFixed(2);
+    if (reste <= 0.01) continue;
+    const ech = echeanceFacture(f);
+    const retard = Math.floor((now - ech) / 86400000);
+    const pen = penaliteRetard(Number(f.montant_ttc) || due, retard);
+    totalDu += reste; if (retard > 0) { totalRetard += reste; totalPenalite += pen; }
+    const b = retard <= 0 ? null : retard <= 30 ? "b0_30" : retard <= 60 ? "b30_60" : retard <= 90 ? "b60_90" : "b90";
+    if (b) buckets[b] += reste;
+    lignes.push({ id: f.id, numero: f.numero, client: f.client, date_emission: f.date_emission, echeance: ech, montant_ttc: f.montant_ttc, du: due, encaisse: enc, reste, retard, penalite: pen, delai_paiement: f.delai_paiement || 60 });
+  }
+  lignes.sort((a, b) => b.retard - a.retard);
+  res.json({ lignes, resume: { totalDu, totalRetard, totalPenalite, buckets } });
+}));
+app.get("/api/factures/:id/relance/pdf", requireAuth, wrap(async (req, res) => {
+  const f = (await pool.query("SELECT * FROM facture WHERE id=$1", [req.params.id])).rows[0];
+  if (!f) return res.status(404).json({ error: "Introuvable" });
+  const company = f.company_id || (await cid(req));
+  const co = await getCompany(company);
+  const enc = Number((await pool.query("SELECT COALESCE(SUM(montant),0) s FROM encaissement WHERE facture_id=$1", [f.id])).rows[0].s);
+  const due = detteFacture(f); const reste = +(due - enc).toFixed(2);
+  const ech = echeanceFacture(f); const now = new Date();
+  const retard = Math.floor((now - ech) / 86400000);
+  const pen = penaliteRetard(Number(f.montant_ttc) || due, retard);
+  const M = 40, W = 515;
+  const fd = (d) => new Date(d).toLocaleDateString("fr-FR");
+  const doc = newDoc(res, `relance-${f.numero || f.id}.pdf`);
+  doc.y = docLetterhead(doc, co, retard > 0 ? "RELANCE — IMPAYÉ" : "RELANCE", f.numero || f.id, fd(now)) + 10;
+  doc.font("Helvetica-Bold").fontSize(11).fillColor("#15171C").text("Objet : Relance pour facture " + (f.numero || "") + (retard > 0 ? " échue" : ""), M, doc.y, { width: W });
+  doc.moveDown(0.5);
+  if (f.client) { doc.font("Helvetica").fontSize(10).fillColor("#15171C").text("À l'attention de : " + f.client, M, doc.y, { width: W }); doc.moveDown(0.5); }
+  const p = (t, o = {}) => { doc.font(o.b ? "Helvetica-Bold" : "Helvetica").fontSize(o.s || 10).fillColor(o.c || "#15171C").text(t, M, doc.y, { width: W, align: o.a || "left" }); doc.moveDown(o.g == null ? 0.5 : o.g); };
+  p("Madame, Monsieur,");
+  if (retard > 0) p(`Sauf erreur de notre part, la facture ${f.numero || ""} d'un montant de ${moneyFR(due)}, émise le ${fd(f.date_emission)} et arrivée à échéance le ${fd(ech)}, demeure impayée à ce jour (retard de ${retard} jour(s)).`);
+  else p(`Nous vous rappelons que la facture ${f.numero || ""} d'un montant de ${moneyFR(due)}, émise le ${fd(f.date_emission)}, arrive à échéance le ${fd(ech)}.`);
+  if (enc > 0) p(`Un règlement partiel de ${moneyFR(enc)} a bien été enregistré. Le solde restant dû s'élève à ${moneyFR(reste)}.`);
+  // encadré montant
+  const by = doc.y + 2; const bh = retard > 0 ? 70 : 34;
+  doc.roundedRect(M, by, W, bh, 6).fill("#F7F8FA");
+  doc.fillColor("#15171C").font("Helvetica-Bold").fontSize(11).text("Montant restant dû : " + moneyFR(reste), M + 12, by + 9, { width: W - 24 });
+  if (retard > 0) doc.font("Helvetica").fontSize(9).fillColor("#8a4a00").text(`Amende pécuniaire estimée au profit du Trésor (loi 69-21) : ${moneyFR(pen)} — taux directeur de Bank Al-Maghrib (2,25 %) le 1er mois de retard, puis 0,85 % par mois ou fraction de mois, sur le montant TTC. Due automatiquement, elle est versée au Trésor public et non au créancier.`, M + 12, by + 28, { width: W - 24 });
+  doc.y = by + bh + 12;
+  if (retard > 0) p("Nous vous remercions de bien vouloir procéder au règlement sous huitaine. À défaut, nous nous réservons le droit d'engager une procédure de recouvrement (injonction de payer) conformément à la loi n° 69-21 relative aux délais de paiement.");
+  else p("Afin de vous éviter toute pénalité, nous vous remercions de bien vouloir procéder au règlement avant la date d'échéance indiquée.");
+  p("Dans cette attente, nous vous prions d'agréer, Madame, Monsieur, l'expression de nos salutations distinguées.", { g: 1.2 });
+  p((co.raison_sociale || ""), { b: true, a: "right", g: 0 });
+  docFooter(doc, co, co.rib ? "Règlement par virement — RIB : " + co.rib : "Merci de joindre la référence de la facture à votre règlement.");
+  doc.end();
+}));
+
+// ══════════════ CAUTIONS & RETENUES DE GARANTIE ══════════════
+const GARANTIE_TYPES = { provisoire: "Caution provisoire", definitif: "Caution définitive", restitution_avance: "Caution de restitution d'avance", retenue_garantie: "Retenue de garantie" };
+function mainleveePrevue(g) {
+  if (g.date_mainlevee_prevue) return new Date(g.date_mainlevee_prevue);
+  if (g.date_reception_definitive) { const d = new Date(g.date_reception_definitive); d.setMonth(d.getMonth() + 3); return d; }
+  return null;
+}
+app.get("/api/garanties", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const rows = (await pool.query(
+    `SELECT g.*, c.code AS chantier_code, c.nom AS chantier_nom FROM garantie g LEFT JOIN chantier c ON c.id=g.chantier_id
+     WHERE g.company_id=$1 ORDER BY g.statut='en_cours' DESC, g.date_emission DESC NULLS LAST, g.id DESC`, [company])).rows;
+  const now = new Date();
+  let immobilise = 0; const parType = {}; const alertes = [];
+  for (const g of rows) {
+    g.type_label = GARANTIE_TYPES[g.type] || g.type;
+    const ml = mainleveePrevue(g); g.mainlevee_prevue = ml;
+    if (g.statut === "en_cours") {
+      immobilise += Number(g.montant) || 0;
+      parType[g.type] = (parType[g.type] || 0) + (Number(g.montant) || 0);
+      if (ml && ml < now) alertes.push({ id: g.id, niveau: "mainlevee", message: `Mainlevée à demander — ${g.type_label} ${g.marche || ""} (${moneyFR(g.montant)})` });
+      if (g.date_validite && new Date(g.date_validite) < new Date(now.getTime() + 30 * 86400000)) alertes.push({ id: g.id, niveau: "validite", message: `Validité bientôt expirée — ${g.type_label} ${g.marche || ""}` });
+    }
+  }
+  res.json({ garanties: rows, resume: { immobilise, parType, nb: rows.filter((g) => g.statut === "en_cours").length, alertes } });
+}));
+app.get("/api/garanties/:id", requireAuth, wrap(async (req, res) => {
+  const g = (await pool.query("SELECT * FROM garantie WHERE id=$1", [req.params.id])).rows[0];
+  if (!g) return res.status(404).json({ error: "Introuvable" });
+  res.json(g);
+}));
+const GARANTIE_COLS = ["chantier_id", "type", "marche", "beneficiaire", "montant_marche", "taux", "montant", "type_emetteur", "emetteur", "num_acte", "date_emission", "date_validite", "date_reception_provisoire", "date_reception_definitive", "date_mainlevee_prevue", "date_mainlevee_reelle", "statut", "observations"];
+app.post("/api/garanties", requireAuth, wrap(async (req, res) => {
+  const b = req.body || {};
+  const company = await cid(req);
+  const cols = GARANTIE_COLS.filter((c) => b[c] !== undefined && b[c] !== "");
+  const vals = cols.map((c) => b[c]); cols.push("company_id"); vals.push(company);
+  const ph = cols.map((_, i) => `$${i + 1}`);
+  const g = (await pool.query(`INSERT INTO garantie (${cols.join(",")}) VALUES (${ph.join(",")}) RETURNING *`, vals)).rows[0];
+  res.status(201).json(g);
+}));
+app.put("/api/garanties/:id", requireAuth, wrap(async (req, res) => {
+  const b = req.body || {};
+  const cols = GARANTIE_COLS.filter((c) => b[c] !== undefined);
+  if (!cols.length) return res.status(400).json({ error: "Aucune donnée" });
+  const set = cols.map((c, i) => `${c}=$${i + 2}`).join(",");
+  const g = (await pool.query(`UPDATE garantie SET ${set} WHERE id=$1 RETURNING *`, [req.params.id, ...cols.map((c) => b[c] === "" ? null : b[c])])).rows[0];
+  res.json(g);
+}));
+app.delete("/api/garanties/:id", requireAuth, wrap(async (req, res) => { await pool.query("DELETE FROM garantie WHERE id=$1", [req.params.id]); res.json({ ok: true }); }));
+app.get("/api/garanties/:id/mainlevee/pdf", requireAuth, wrap(async (req, res) => {
+  const g = (await pool.query("SELECT * FROM garantie WHERE id=$1", [req.params.id])).rows[0];
+  if (!g) return res.status(404).json({ error: "Introuvable" });
+  const co = await getCompany(g.company_id || (await cid(req)));
+  const M = 40, W = 515; const fd = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "—");
+  const typeL = GARANTIE_TYPES[g.type] || g.type;
+  const doc = newDoc(res, `demande-mainlevee-${g.num_acte || g.id}.pdf`);
+  doc.y = docLetterhead(doc, co, "DEMANDE DE MAINLEVÉE", g.num_acte || g.id, fd(new Date())) + 10;
+  const p = (t, o = {}) => { doc.font(o.b ? "Helvetica-Bold" : "Helvetica").fontSize(o.s || 10).fillColor(o.c || "#15171C").text(t, M, doc.y, { width: W, align: o.a || "left" }); doc.moveDown(o.g == null ? 0.5 : o.g); };
+  if (g.beneficiaire) { p("À l'attention de :", { s: 9, c: "#5A6473", g: 0.1 }); p(g.beneficiaire, { b: true }); }
+  doc.moveDown(0.3);
+  p(`Objet : Demande de mainlevée — ${typeL}`, { b: true });
+  doc.moveDown(0.3);
+  p("Madame, Monsieur,");
+  p(`Dans le cadre du marché « ${g.marche || "—"} », nous avons constitué une ${typeL.toLowerCase()}${g.num_acte ? " (acte n° " + g.num_acte + ")" : ""}${g.emetteur ? " auprès de " + g.emetteur : ""} d'un montant de ${moneyFR(g.montant)}.`);
+  if (g.date_reception_definitive) p(`La réception définitive des travaux ayant été prononcée le ${fd(g.date_reception_definitive)}, et conformément à l'article 19 du CCAG-Travaux (décret n° 2-14-394) qui prévoit la mainlevée dans un délai de trois mois suivant la réception définitive, nous vous prions de bien vouloir procéder à la libération de cette garantie.`);
+  else p(`Les obligations contractuelles étant remplies, nous vous prions de bien vouloir procéder à la mainlevée de cette garantie conformément à l'article 19 du CCAG-Travaux (décret n° 2-14-394).`);
+  // encadré récap
+  const by = doc.y + 2; doc.roundedRect(M, by, W, 60, 6).fill("#F7F8FA");
+  const kv = (l, v, i) => { const x = M + 12 + (i % 2) * ((W - 24) / 2); const yy = by + 10 + Math.floor(i / 2) * 24; doc.font("Helvetica").fontSize(7.5).fillColor("#8a93a0").text(l, x, yy); doc.font("Helvetica-Bold").fontSize(9.5).fillColor("#15171C").text(v, x, yy + 9); };
+  kv("Type de garantie", typeL, 0); kv("Montant", moneyFR(g.montant), 1);
+  kv("N° d'acte / référence", g.num_acte || "—", 2); kv("Émetteur", g.emetteur || "—", 3);
+  doc.y = by + 70;
+  p("Dans l'attente de votre accord, nous vous prions d'agréer, Madame, Monsieur, l'expression de nos salutations distinguées.", { g: 1.2 });
+  p(co.raison_sociale || "", { b: true, a: "right", g: 0 });
+  docFooter(doc, co, "Demande de mainlevée — à adresser au maître d'ouvrage.");
+  doc.end();
+}));
+app.get("/api/garanties/etat/pdf", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req); const co = await getCompany(company);
+  const rows = (await pool.query("SELECT g.*, c.nom AS chantier_nom FROM garantie g LEFT JOIN chantier c ON c.id=g.chantier_id WHERE g.company_id=$1 ORDER BY g.statut, g.date_emission", [company])).rows;
+  const M = 40, W = 515; const fd = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "—");
+  const doc = newDoc(res, "etat-cautions-rg.pdf");
+  doc.y = docLetterhead(doc, co, "ÉTAT DES CAUTIONS & RG", "—", new Date().toLocaleDateString("fr-FR")) + 8;
+  const cols = [["Type", 92], ["Marché", 120], ["Émetteur", 80], ["Montant", 70], ["Validité", 55], ["Mainlevée", 55], ["Statut", 43]];
+  let hy = doc.y; doc.rect(M, hy, W, 16).fill("#15171C"); let cx = M;
+  cols.forEach((c) => { doc.font("Helvetica-Bold").fontSize(7).fillColor("#fff").text(c[0], cx + 3, hy + 5, { width: c[1] - 4 }); cx += c[1]; });
+  doc.y = hy + 16; let totEnCours = 0;
+  rows.forEach((g, i) => {
+    if (g.statut === "en_cours") totEnCours += Number(g.montant) || 0;
+    const h = 16; if (doc.y + h > 770) doc.addPage();
+    const ry = doc.y; if (i % 2) doc.rect(M, ry, W, h).fill("#F7F8FA"); cx = M;
+    const ml = mainleveePrevue(g);
+    const put = (t, w, al) => { doc.font("Helvetica").fontSize(7).fillColor("#15171C").text(t || "", cx + 3, ry + 5, { width: w - 5, align: al || "left" }); cx += w; };
+    put(GARANTIE_TYPES[g.type] || g.type, cols[0][1]); put(g.marche, cols[1][1]); put(g.emetteur, cols[2][1]); put(moneyFR(g.montant).replace(" MAD", ""), cols[3][1], "right"); put(fd(g.date_validite), cols[4][1]); put(ml ? fd(ml) : "—", cols[5][1]); put(g.statut, cols[6][1]);
+    doc.y = ry + h;
+  });
+  doc.moveDown(0.8);
+  doc.font("Helvetica-Bold").fontSize(11).fillColor("#15171C").text("Total immobilisé (en cours) : " + moneyFR(totEnCours), M, doc.y, { width: W, align: "right" });
+  docFooter(doc, co, "État des garanties — mainlevée prévue 3 mois après réception définitive (CCAG-T, art. 19).");
+  doc.end();
+}));
+
+// ══════════════ GASOIL / CARBURANT ══════════════
+app.get("/api/gasoil", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const rows = (await pool.query(
+    `SELECT g.*, m.designation AS materiel_nom, m.code AS materiel_code, m.unite_compteur, c.code AS chantier_code
+     FROM gasoil_bon g LEFT JOIN materiel m ON m.id=g.materiel_id LEFT JOIN chantier c ON c.id=g.chantier_id
+     WHERE g.company_id=$1 ORDER BY g.date_bon DESC, g.id DESC`, [company])).rows;
+  const totLitres = rows.reduce((s, r) => s + (Number(r.quantite_litres) || 0), 0);
+  const totCout = rows.reduce((s, r) => s + (Number(r.montant) || 0), 0);
+  // consommation par engin
+  const byEngin = {};
+  rows.forEach((r) => {
+    const k = r.materiel_id || ("v:" + (r.vehicule || "?"));
+    if (!byEngin[k]) byEngin[k] = { nom: r.materiel_nom || r.vehicule || "Non affecté", code: r.materiel_code || "", unite: r.unite_compteur || "km", litres: 0, cout: 0, compteurs: [] };
+    byEngin[k].litres += Number(r.quantite_litres) || 0; byEngin[k].cout += Number(r.montant) || 0;
+    if (r.compteur != null) byEngin[k].compteurs.push(Number(r.compteur));
+  });
+  const engins = Object.values(byEngin).map((e) => {
+    let conso = null;
+    if (e.compteurs.length >= 2) { const mn = Math.min(...e.compteurs), mx = Math.max(...e.compteurs); if (mx > mn) conso = +(e.litres / (mx - mn) * 100).toFixed(1); }
+    return { nom: e.nom, code: e.code, unite: e.unite, litres: +e.litres.toFixed(2), cout: +e.cout.toFixed(2), conso };
+  }).sort((a, b) => b.cout - a.cout);
+  res.json({ bons: rows, resume: { totLitres: +totLitres.toFixed(2), totCout: +totCout.toFixed(2), engins } });
+}));
+app.post("/api/gasoil", requireAuth, wrap(async (req, res) => {
+  const b = req.body || {};
+  const company = await cid(req);
+  const litres = Number(b.quantite_litres) || 0, prix = b.prix_litre != null && b.prix_litre !== "" ? Number(b.prix_litre) : null;
+  const montant = b.montant != null && b.montant !== "" ? Number(b.montant) : (prix != null ? +(litres * prix).toFixed(2) : null);
+  const g = (await pool.query(
+    `INSERT INTO gasoil_bon (company_id,date_bon,materiel_id,vehicule,chauffeur,chantier_id,quantite_litres,prix_litre,montant,compteur,station,num_bon,plein,observations)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+    [company, b.date_bon || new Date(), b.materiel_id || null, b.vehicule || null, b.chauffeur || null, b.chantier_id || null, litres, prix, montant, b.compteur || null, b.station || null, b.num_bon || null, b.plein === false || b.plein === "false" ? false : true, b.observations || null])).rows[0];
+  // met à jour le compteur du matériel si fourni et supérieur
+  if (b.materiel_id && b.compteur) await pool.query("UPDATE materiel SET compteur=$1 WHERE id=$2 AND (compteur IS NULL OR compteur < $1)", [b.compteur, b.materiel_id]);
+  res.status(201).json(g);
+}));
+app.delete("/api/gasoil/:id", requireAuth, wrap(async (req, res) => { await pool.query("DELETE FROM gasoil_bon WHERE id=$1", [req.params.id]); res.json({ ok: true }); }));
+app.get("/api/gasoil/pdf", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req); const co = await getCompany(company);
+  const rows = (await pool.query(
+    `SELECT g.*, m.designation AS materiel_nom, m.code AS materiel_code FROM gasoil_bon g LEFT JOIN materiel m ON m.id=g.materiel_id
+     WHERE g.company_id=$1 ORDER BY g.date_bon, g.id`, [company])).rows;
+  const M = 40, W = 515; const fd = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "");
+  const doc = newDoc(res, "registre-gasoil.pdf");
+  doc.y = docLetterhead(doc, co, "REGISTRE GASOIL", "—", new Date().toLocaleDateString("fr-FR")) + 8;
+  const cols = [["Date", 55], ["Engin / Véhicule", 120], ["Chauffeur", 75], ["N° bon", 55], ["Compteur", 55], ["Litres", 50], ["Montant", 55]];
+  let hy = doc.y; doc.rect(M, hy, W, 16).fill("#15171C"); let cx = M;
+  cols.forEach((c) => { doc.font("Helvetica-Bold").fontSize(7).fillColor("#fff").text(c[0], cx + 3, hy + 5, { width: c[1] - 4 }); cx += c[1]; });
+  doc.y = hy + 16; let totL = 0, totM = 0;
+  rows.forEach((g, i) => {
+    totL += Number(g.quantite_litres) || 0; totM += Number(g.montant) || 0;
+    const h = 15; if (doc.y + h > 770) doc.addPage();
+    const ry = doc.y; if (i % 2) doc.rect(M, ry, W, h).fill("#F7F8FA"); cx = M;
+    const put = (t, w, al) => { doc.font("Helvetica").fontSize(7).fillColor("#15171C").text(t || "", cx + 3, ry + 4, { width: w - 5, align: al || "left" }); cx += w; };
+    put(fd(g.date_bon), cols[0][1]); put(g.materiel_nom || g.vehicule, cols[1][1]); put(g.chauffeur, cols[2][1]); put(g.num_bon, cols[3][1]); put(g.compteur != null ? String(g.compteur) : "", cols[4][1], "right"); put(String(g.quantite_litres), cols[5][1], "right"); put(g.montant != null ? moneyFR(g.montant).replace(" MAD", "") : "", cols[6][1], "right");
+    doc.y = ry + h;
+  });
+  doc.moveDown(0.6);
+  doc.font("Helvetica-Bold").fontSize(10).fillColor("#15171C").text(`Total : ${totL.toFixed(2)} litres  ·  ${moneyFR(totM)}`, M, doc.y, { width: W, align: "right" });
+  docFooter(doc, co, "Registre de consommation gasoil.");
+  doc.end();
+}));
+
+// ══════════════ DÉCLARATION D'ACCIDENT DE TRAVAIL (loi 18-12) ══════════════
+const AT_COLS = ["ouvrier_id", "employee_id", "victime_nom", "victime_cin", "victime_cnss", "victime_poste", "chantier_id", "type_accident", "date_accident", "heure_accident", "lieu", "circonstances", "nature_lesion", "siege_lesion", "temoins", "date_info_employeur", "date_decl_assureur", "date_avis_travail", "assureur", "num_police", "certificat_medical", "jours_arret", "gravite", "suites", "statut"];
+app.get("/api/accidents", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const rows = (await pool.query(
+    `SELECT a.*, COALESCE(a.victime_nom, o.nom, e.nom) AS victime, c.code AS chantier_code
+     FROM accident_travail a LEFT JOIN ouvrier_chantier o ON o.id=a.ouvrier_id LEFT JOIN employee e ON e.id=a.employee_id LEFT JOIN chantier c ON c.id=a.chantier_id
+     WHERE a.company_id=$1 ORDER BY a.date_accident DESC NULLS LAST, a.id DESC`, [company])).rows;
+  res.json(rows);
+}));
+app.get("/api/accidents/:id", requireAuth, wrap(async (req, res) => {
+  const a = (await pool.query("SELECT * FROM accident_travail WHERE id=$1", [req.params.id])).rows[0];
+  if (!a) return res.status(404).json({ error: "Introuvable" }); res.json(a);
+}));
+app.post("/api/accidents", requireAuth, wrap(async (req, res) => {
+  const b = { ...req.body }; const company = await cid(req);
+  // pré-remplissage depuis la fiche ouvrier / salarié
+  if (b.ouvrier_id) { const o = (await pool.query("SELECT * FROM ouvrier_chantier WHERE id=$1", [b.ouvrier_id])).rows[0]; if (o) { b.victime_nom = b.victime_nom || o.nom; b.victime_cin = b.victime_cin || o.cin; b.victime_cnss = b.victime_cnss || o.num_cnss; b.victime_poste = b.victime_poste || o.metier; b.assureur = b.assureur || o.assurance_compagnie; b.num_police = b.num_police || o.assurance_police; } }
+  else if (b.employee_id) { const e = (await pool.query("SELECT * FROM employee WHERE id=$1", [b.employee_id])).rows[0]; if (e) { b.victime_nom = b.victime_nom || e.nom; b.victime_cin = b.victime_cin || e.cin; b.victime_cnss = b.victime_cnss || e.cnss; b.victime_poste = b.victime_poste || e.poste; } }
+  const cols = AT_COLS.filter((c) => b[c] !== undefined && b[c] !== "");
+  const vals = cols.map((c) => b[c]); cols.push("company_id"); vals.push(company);
+  const a = (await pool.query(`INSERT INTO accident_travail (${cols.join(",")}) VALUES (${cols.map((_, i) => "$" + (i + 1)).join(",")}) RETURNING *`, vals)).rows[0];
+  res.status(201).json(a);
+}));
+app.put("/api/accidents/:id", requireAuth, wrap(async (req, res) => {
+  const b = req.body || {}; const cols = AT_COLS.filter((c) => b[c] !== undefined);
+  if (!cols.length) return res.status(400).json({ error: "Aucune donnée" });
+  const set = cols.map((c, i) => `${c}=$${i + 2}`).join(",");
+  const a = (await pool.query(`UPDATE accident_travail SET ${set} WHERE id=$1 RETURNING *`, [req.params.id, ...cols.map((c) => b[c] === "" ? null : b[c])])).rows[0];
+  res.json(a);
+}));
+app.delete("/api/accidents/:id", requireAuth, wrap(async (req, res) => { await pool.query("DELETE FROM accident_travail WHERE id=$1", [req.params.id]); res.json({ ok: true }); }));
+app.get("/api/accidents/:id/pdf", requireAuth, wrap(async (req, res) => {
+  const a = (await pool.query("SELECT * FROM accident_travail WHERE id=$1", [req.params.id])).rows[0];
+  if (!a) return res.status(404).json({ error: "Introuvable" });
+  const co = await getCompany(a.company_id || (await cid(req)));
+  const ch = a.chantier_id ? (await pool.query("SELECT * FROM chantier WHERE id=$1", [a.chantier_id])).rows[0] : null;
+  const M = 40, W = 515; const fd = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "—");
+  const doc = newDoc(res, `declaration-AT-${a.id}.pdf`);
+  doc.y = docLetterhead(doc, co, "DÉCLARATION D'ACCIDENT DU TRAVAIL", a.id, fd(new Date())) + 6;
+  doc.font("Helvetica").fontSize(8).fillColor("#5A6473").text("Loi n° 18-12 relative à la réparation des accidents du travail — à transmettre à l'assureur et au Directeur régional chargé du travail dans les 5 jours.", M, doc.y, { width: W }); doc.moveDown(0.5);
+  const section = (t) => { if (doc.y > 730) doc.addPage(); doc.moveDown(0.2); doc.font("Helvetica-Bold").fontSize(10).fillColor("#15171C").text(t.toUpperCase(), M, doc.y, { width: W }); const yl = doc.y + 1; doc.moveTo(M, yl).lineTo(M + W, yl).strokeColor("#F5B301").lineWidth(1).stroke(); doc.moveDown(0.4); };
+  const kv = (pairs) => { pairs = pairs.filter(Boolean); for (let i = 0; i < pairs.length; i += 2) { if (doc.y > 760) doc.addPage(); const y = doc.y, cw = (W - 12) / 2; [pairs[i], pairs[i + 1]].forEach((p, idx) => { if (!p) return; const x = M + idx * (cw + 12); doc.font("Helvetica").fontSize(7.5).fillColor("#8a93a0").text(p[0], x, y, { width: cw }); doc.font("Helvetica-Bold").fontSize(9).fillColor("#15171C").text(p[1] || "—", x, y + 9, { width: cw }); }); doc.y = y + 25; } };
+  const para = (l, v) => { if (!v) return; section(l); doc.font("Helvetica").fontSize(9.5).fillColor("#15171C").text(v, M, doc.y, { width: W }); doc.moveDown(0.5); };
+  section("Employeur"); kv([["Raison sociale", co.raison_sociale], ["ICE", co.ice], ["N° CNSS employeur", co.cnss], ["Adresse", [co.adresse, co.ville].filter(Boolean).join(", ")]]);
+  section("Victime"); kv([["Nom et prénom", a.victime_nom], ["CIN", a.victime_cin], ["N° CNSS", a.victime_cnss], ["Poste / métier", a.victime_poste]]);
+  section("Accident"); kv([["Type", a.type_accident === "trajet" ? "Accident de trajet" : "Accident du travail"], ["Date", fd(a.date_accident)], ["Heure", a.heure_accident], ["Lieu", a.lieu || (ch ? ch.nom : "")], ["Gravité", a.gravite], ["Jours d'arrêt", a.jours_arret != null ? String(a.jours_arret) : "—"]]);
+  para("Circonstances détaillées", a.circonstances);
+  kv([["Nature de la lésion", a.nature_lesion], ["Siège de la lésion", a.siege_lesion]]);
+  para("Témoins", a.temoins);
+  section("Assurance & déclarations"); kv([["Assureur", a.assureur], ["N° de police", a.num_police], ["Certificat médical initial", a.certificat_medical ? "Joint" : "À joindre"], ["Information par la victime", fd(a.date_info_employeur)], ["Déclaration à l'assureur", fd(a.date_decl_assureur)], ["Avis au Dir. régional du travail", fd(a.date_avis_travail)]]);
+  if (doc.y > 660) doc.addPage();
+  doc.moveDown(0.6);
+  const sy = doc.y, sw = (W - 20) / 2;
+  doc.font("Helvetica-Bold").fontSize(9).fillColor("#15171C").text("L'EMPLOYEUR", M, sy, { width: sw, align: "center" });
+  doc.text("LA VICTIME (ou représentant)", M + sw + 20, sy, { width: sw, align: "center" });
+  doc.lineWidth(0.8).strokeColor("#cbd5e1").rect(M, sy + 16, sw, 48).stroke().rect(M + sw + 20, sy + 16, sw, 48).stroke();
+  docFooter(doc, co, "Déclaration AT (loi 18-12) — indemnité journalière 2/3 du salaire dès le 1er jour.");
+  doc.end();
+}));
+
+// ══════════════ ÉCHÉANCIER FISCAL & SOCIAL ══════════════
+app.get("/api/echeances", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const rows = (await pool.query("SELECT * FROM echeance WHERE company_id=$1 ORDER BY date_echeance, id", [company])).rows;
+  const now = new Date(); now.setHours(0, 0, 0, 0);
+  let aVenir = 0, enRetard = 0;
+  rows.forEach((e) => { const d = new Date(e.date_echeance); e.retard = e.statut !== "fait" && d < now; if (e.statut !== "fait") { if (e.retard) enRetard++; else if (d <= new Date(now.getTime() + 30 * 86400000)) aVenir++; } });
+  res.json({ echeances: rows, resume: { aVenir, enRetard, total: rows.filter((e) => e.statut !== "fait").length } });
+}));
+app.post("/api/echeances/generer", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const tva = (req.body && req.body.tva) || "mensuelle"; const salaries = !req.body || req.body.salaries !== false;
+  const start = new Date(); start.setDate(1);
+  const items = [];
+  const moisNom = (d) => d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+  for (let i = 0; i < 12; i++) {
+    const m = new Date(start.getFullYear(), start.getMonth() + i, 1);
+    const prev = new Date(m.getFullYear(), m.getMonth() - 1, 1);
+    const mm = m.getMonth(); // 0-based
+    if (salaries) {
+      items.push(["CNSS", `CNSS / Damancom — paie ${moisNom(prev)}`, new Date(m.getFullYear(), mm, 10)]);
+      items.push(["IR", `IR retenue à la source — ${moisNom(prev)}`, new Date(m.getFullYear(), mm, 20)]);
+    }
+    if (tva === "mensuelle") items.push(["TVA", `TVA mensuelle — ${moisNom(prev)}`, new Date(m.getFullYear(), mm, 20)]);
+    else if ([0, 3, 6, 9].includes(mm)) items.push(["TVA", `TVA trimestrielle — trimestre précédent`, new Date(m.getFullYear(), mm, 20)]);
+    if ([2, 5, 8, 11].includes(mm)) { const lastDay = new Date(m.getFullYear(), mm + 1, 0).getDate(); const tnum = { 2: 1, 5: 2, 8: 3, 11: 4 }[mm]; items.push(["IS", `Acompte provisionnel IS — ${tnum}er/e acompte`, new Date(m.getFullYear(), mm, lastDay)]); }
+    if (mm === 2) items.push(["IS", `Déclaration annuelle IS + régularisation`, new Date(m.getFullYear(), 2, 31)]);
+    if ([0, 3, 6, 9].includes(mm)) { const lastDay = new Date(m.getFullYear(), mm + 1, 0).getDate(); items.push(["69-21", `Déclaration trimestrielle délais de paiement (loi 69-21)`, new Date(m.getFullYear(), mm, lastDay)]); }
+  }
+  let added = 0;
+  for (const [type, libelle, date] of items) {
+    const ds = date.toISOString().slice(0, 10);
+    const exists = (await pool.query("SELECT 1 FROM echeance WHERE company_id=$1 AND type=$2 AND date_echeance=$3 AND libelle=$4", [company, type, ds, libelle])).rowCount;
+    if (!exists) { await pool.query("INSERT INTO echeance (company_id,type,libelle,date_echeance,auto) VALUES ($1,$2,$3,$4,true)", [company, type, libelle, ds]); added++; }
+  }
+  res.json({ ok: true, added });
+}));
+app.post("/api/echeances", requireAuth, wrap(async (req, res) => {
+  const b = req.body || {}; const company = await cid(req);
+  const e = (await pool.query("INSERT INTO echeance (company_id,type,libelle,date_echeance,montant,notes) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *",
+    [company, b.type || "Autre", b.libelle || "Échéance", b.date_echeance, b.montant || null, b.notes || null])).rows[0];
+  res.status(201).json(e);
+}));
+app.put("/api/echeances/:id", requireAuth, wrap(async (req, res) => {
+  const b = req.body || {}; const cols = ["type", "libelle", "date_echeance", "statut", "date_fait", "montant", "notes"].filter((c) => b[c] !== undefined);
+  if (!cols.length) return res.status(400).json({ error: "Aucune donnée" });
+  const set = cols.map((c, i) => `${c}=$${i + 2}`).join(",");
+  const e = (await pool.query(`UPDATE echeance SET ${set} WHERE id=$1 RETURNING *`, [req.params.id, ...cols.map((c) => b[c] === "" ? null : b[c])])).rows[0];
+  res.json(e);
+}));
+app.delete("/api/echeances/:id", requireAuth, wrap(async (req, res) => { await pool.query("DELETE FROM echeance WHERE id=$1", [req.params.id]); res.json({ ok: true }); }));
+
+// ══════════════ APPELS D'OFFRES / SOUMISSIONS ══════════════
+const AO_COLS = ["objet", "reference", "maitre_ouvrage", "date_publication", "date_limite", "date_ouverture", "montant_estime", "caution_provisoire", "statut", "date_resultat", "montant_adjuge", "chantier_id", "observations"];
+app.get("/api/appels-offres", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const rows = (await pool.query("SELECT * FROM appel_offre WHERE company_id=$1 ORDER BY date_limite DESC NULLS LAST, id DESC", [company])).rows;
+  const now = new Date(); const enCours = rows.filter((a) => ["a_etudier", "en_preparation", "soumis"].includes(a.statut));
+  const gagnes = rows.filter((a) => a.statut === "gagne").length, perdus = rows.filter((a) => a.statut === "perdu").length;
+  rows.forEach((a) => { a.urgent = a.date_limite && ["a_etudier", "en_preparation"].includes(a.statut) && new Date(a.date_limite) >= now && new Date(a.date_limite) <= new Date(now.getTime() + 7 * 86400000); });
+  res.json({ appels: rows, resume: { enCours: enCours.length, pipeline: enCours.reduce((s, a) => s + (Number(a.montant_estime) || 0), 0), tauxReussite: gagnes + perdus ? Math.round(gagnes / (gagnes + perdus) * 100) : null, gagnes } });
+}));
+app.get("/api/appels-offres/:id", requireAuth, wrap(async (req, res) => { const a = (await pool.query("SELECT * FROM appel_offre WHERE id=$1", [req.params.id])).rows[0]; if (!a) return res.status(404).json({ error: "Introuvable" }); res.json(a); }));
+app.post("/api/appels-offres", requireAuth, wrap(async (req, res) => {
+  const b = req.body || {}; const company = await cid(req);
+  const cols = AO_COLS.filter((c) => b[c] !== undefined && b[c] !== "");
+  const vals = cols.map((c) => b[c]); cols.push("company_id"); vals.push(company);
+  const a = (await pool.query(`INSERT INTO appel_offre (${cols.join(",")}) VALUES (${cols.map((_, i) => "$" + (i + 1)).join(",")}) RETURNING *`, vals)).rows[0];
+  res.status(201).json(a);
+}));
+app.put("/api/appels-offres/:id", requireAuth, wrap(async (req, res) => {
+  const b = req.body || {}; const cols = AO_COLS.filter((c) => b[c] !== undefined);
+  if (!cols.length) return res.status(400).json({ error: "Aucune donnée" });
+  const set = cols.map((c, i) => `${c}=$${i + 2}`).join(",");
+  const a = (await pool.query(`UPDATE appel_offre SET ${set} WHERE id=$1 RETURNING *`, [req.params.id, ...cols.map((c) => b[c] === "" ? null : b[c])])).rows[0];
+  res.json(a);
+}));
+app.delete("/api/appels-offres/:id", requireAuth, wrap(async (req, res) => { await pool.query("DELETE FROM appel_offre WHERE id=$1", [req.params.id]); res.json({ ok: true }); }));
+
+// ══════════════ MAINTENANCE DU MATÉRIEL ══════════════
+app.get("/api/maintenances", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const rows = (await pool.query("SELECT m.*, mat.designation AS materiel_nom, mat.code AS materiel_code FROM maintenance m LEFT JOIN materiel mat ON mat.id=m.materiel_id WHERE m.company_id=$1 ORDER BY m.date_maintenance DESC, m.id DESC", [company])).rows;
+  // matériel dont la prochaine maintenance approche
+  const now = new Date();
+  const aPrevoir = (await pool.query("SELECT id,code,designation,prochaine_maintenance FROM materiel WHERE company_id=$1 AND prochaine_maintenance IS NOT NULL AND prochaine_maintenance <= $2 ORDER BY prochaine_maintenance", [company, new Date(now.getTime() + 30 * 86400000)])).rows;
+  const coutTotal = rows.reduce((s, m) => s + (Number(m.cout) || 0), 0);
+  res.json({ maintenances: rows, resume: { aPrevoir, coutTotal, nb: rows.length } });
+}));
+app.post("/api/maintenances", requireAuth, wrap(async (req, res) => {
+  const b = req.body || {}; const company = await cid(req);
+  const m = (await pool.query(
+    `INSERT INTO maintenance (company_id,materiel_id,date_maintenance,type,description,cout,compteur,prestataire,prochaine_date,prochain_compteur,statut)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+    [company, b.materiel_id || null, b.date_maintenance || new Date(), b.type || "preventive", b.description || null, b.cout || null, b.compteur || null, b.prestataire || null, b.prochaine_date || null, b.prochain_compteur || null, b.statut || "fait"])).rows[0];
+  if (b.materiel_id && b.prochaine_date) await pool.query("UPDATE materiel SET prochaine_maintenance=$1 WHERE id=$2", [b.prochaine_date, b.materiel_id]);
+  res.status(201).json(m);
+}));
+app.put("/api/maintenances/:id", requireAuth, wrap(async (req, res) => {
+  const b = req.body || {}; const cols = ["materiel_id", "date_maintenance", "type", "description", "cout", "compteur", "prestataire", "prochaine_date", "prochain_compteur", "statut"].filter((c) => b[c] !== undefined);
+  if (!cols.length) return res.status(400).json({ error: "Aucune donnée" });
+  const set = cols.map((c, i) => `${c}=$${i + 2}`).join(",");
+  const m = (await pool.query(`UPDATE maintenance SET ${set} WHERE id=$1 RETURNING *`, [req.params.id, ...cols.map((c) => b[c] === "" ? null : b[c])])).rows[0];
+  res.json(m);
+}));
+app.delete("/api/maintenances/:id", requireAuth, wrap(async (req, res) => { await pool.query("DELETE FROM maintenance WHERE id=$1", [req.params.id]); res.json({ ok: true }); }));
+
 // ══════════════ CENTRE D'ALERTES ══════════════
 app.get("/api/alertes", requireAuth, wrap(async (req, res) => {
   const company = await cid(req);
@@ -1825,10 +2376,24 @@ app.get("/api/alertes", requireAuth, wrap(async (req, res) => {
   add(await one("SELECT count(*)::int n FROM conge WHERE company_id=$1 AND statut='en_attente'"), "conges", "info", "conges", (n) => `${n} demande(s) de congé en attente`);
   add(await one("SELECT count(*)::int n FROM materiel WHERE company_id=$1 AND etat IN ('maintenance','hs')"), "materiel", "info", "materiel", (n) => `${n} matériel(s) en maintenance ou hors service`);
   add(await one("SELECT count(*)::int n FROM tache WHERE company_id=$1 AND date_fin < current_date AND avancement < 100 AND statut<>'termine'"), "planning", "alerte", "planning", (n) => `${n} tâche(s) de planning en retard`);
-  add(await one(`SELECT count(*)::int n FROM facture f WHERE f.company_id=$1 AND f.type<>'avoir'
-       AND f.date_emission < current_date - interval '60 days'
-       AND COALESCE(f.net_a_payer,f.montant_ttc) > COALESCE((SELECT SUM(montant) FROM paiement WHERE facture_id=f.id AND sens='encaissement'),0)`),
-    "tresorerie", "alerte", "tresorerie", (n) => `${n} facture(s) en retard de paiement (> 60 j)`);
+  add(await one(`SELECT count(*)::int n FROM facture f WHERE f.company_id=$1 AND COALESCE(f.type,'facture')<>'avoir'
+       AND (f.date_emission + (COALESCE(f.delai_paiement,60) || ' days')::interval) < now()
+       AND COALESCE(f.net_a_payer,f.montant_ttc,0) > COALESCE((SELECT SUM(montant) FROM encaissement WHERE facture_id=f.id),0)`),
+    "tresorerie", "alerte", "encaissements", (n) => `${n} facture(s) échue(s) impayée(s)`);
+  add(await one(`SELECT count(*)::int n FROM garantie WHERE company_id=$1 AND statut='en_cours'
+       AND COALESCE(date_mainlevee_prevue, date_reception_definitive + interval '3 months') < now()`),
+    "garanties", "alerte", "garanties", (n) => `${n} mainlevée(s) de caution/RG à demander`);
+  add(await one("SELECT count(*)::int n FROM echeance WHERE company_id=$1 AND statut<>'fait' AND date_echeance < current_date"),
+    "echeances", "alerte", "echeances", (n) => `${n} échéance(s) fiscale/sociale en retard`);
+  add(await one("SELECT count(*)::int n FROM echeance WHERE company_id=$1 AND statut<>'fait' AND date_echeance >= current_date AND date_echeance <= current_date + 7"),
+    "echeances", "info", "echeances", (n) => `${n} échéance(s) fiscale/sociale dans 7 jours`);
+  add(await one(`SELECT count(*)::int n FROM appel_offre WHERE company_id=$1 AND statut IN ('a_etudier','en_preparation')
+       AND date_limite IS NOT NULL AND date_limite >= current_date AND date_limite <= current_date + 7`),
+    "appels", "alerte", "appels-offres", (n) => `${n} appel(s) d'offres à remettre sous 7 jours`);
+  add(await one("SELECT count(*)::int n FROM materiel WHERE company_id=$1 AND prochaine_maintenance IS NOT NULL AND prochaine_maintenance <= current_date + 15"),
+    "maintenance", "info", "maintenances", (n) => `${n} matériel(s) à entretenir (sous 15 j)`);
+  add(await one("SELECT count(*)::int n FROM accident_travail WHERE company_id=$1 AND date_decl_assureur IS NULL AND date_accident >= current_date - 5"),
+    "accidents", "alerte", "accidents", (n) => `${n} accident(s) à déclarer à l'assureur (loi 18-12, 5 j)`);
   res.json({ total: out.reduce((s, a) => s + a.count, 0), alertes: out });
 }));
 

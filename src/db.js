@@ -149,6 +149,10 @@ ALTER TABLE facture ADD COLUMN IF NOT EXISTS cumul_anterieur numeric(14,2) DEFAU
 ALTER TABLE facture ADD COLUMN IF NOT EXISTS retenue_garantie numeric(14,2) DEFAULT 0;
 ALTER TABLE facture ADD COLUMN IF NOT EXISTS rg_taux numeric(5,2) DEFAULT 0;
 ALTER TABLE facture ADD COLUMN IF NOT EXISTS net_a_payer numeric(14,2) DEFAULT 0;
+ALTER TABLE facture ADD COLUMN IF NOT EXISTS objet text;
+ALTER TABLE facture ADD COLUMN IF NOT EXISTS tva_taux numeric(5,2) DEFAULT 20;
+ALTER TABLE facture ADD COLUMN IF NOT EXISTS contenu jsonb;
+ALTER TABLE facture ADD COLUMN IF NOT EXISTS delai_paiement int DEFAULT 60;
 
 -- Stock : valorisation au coût moyen unitaire pondéré (CMUP)
 ALTER TABLE article ADD COLUMN IF NOT EXISTS cmup numeric(12,2) DEFAULT 0;
@@ -384,6 +388,100 @@ CREATE TABLE IF NOT EXISTS ouvrier_doc (
   ouvrier_id int REFERENCES ouvrier_chantier(id) ON DELETE CASCADE,
   type text, nom text, data text, created_at timestamptz DEFAULT now());
 
+-- Caisse / dépenses de chantier (petty cash)
+CREATE TABLE IF NOT EXISTS caisse_mouvement (
+  id serial PRIMARY KEY,
+  company_id int REFERENCES company(id),
+  chantier_id int REFERENCES chantier(id),
+  type text NOT NULL DEFAULT 'depense',
+  date_mouvement date NOT NULL DEFAULT current_date,
+  categorie text, description text, beneficiaire text,
+  montant numeric(14,2) NOT NULL DEFAULT 0,
+  mode_paiement text DEFAULT 'espèces',
+  reference_piece text, tva_recuperable boolean DEFAULT false,
+  created_at timestamptz DEFAULT now());
+
+-- Encaissements clients (règlements de factures)
+CREATE TABLE IF NOT EXISTS encaissement (
+  id serial PRIMARY KEY,
+  company_id int REFERENCES company(id),
+  facture_id int REFERENCES facture(id) ON DELETE SET NULL,
+  client text, date_encaissement date NOT NULL DEFAULT current_date,
+  montant numeric(14,2) NOT NULL DEFAULT 0,
+  mode_paiement text DEFAULT 'virement', reference text,
+  created_at timestamptz DEFAULT now());
+
+-- Cautions & retenues de garantie (marchés)
+CREATE TABLE IF NOT EXISTS garantie (
+  id serial PRIMARY KEY,
+  company_id int REFERENCES company(id),
+  chantier_id int REFERENCES chantier(id),
+  type text NOT NULL DEFAULT 'definitif',
+  marche text, beneficiaire text,
+  montant_marche numeric(14,2), taux numeric(6,3), montant numeric(14,2),
+  type_emetteur text DEFAULT 'banque', emetteur text, num_acte text,
+  date_emission date, date_validite date,
+  date_reception_provisoire date, date_reception_definitive date,
+  date_mainlevee_prevue date, date_mainlevee_reelle date,
+  statut text DEFAULT 'en_cours', observations text,
+  created_at timestamptz DEFAULT now());
+
+-- Gasoil / carburant
+CREATE TABLE IF NOT EXISTS gasoil_bon (
+  id serial PRIMARY KEY,
+  company_id int REFERENCES company(id),
+  date_bon date NOT NULL DEFAULT current_date,
+  materiel_id int REFERENCES materiel(id), vehicule text, chauffeur text,
+  chantier_id int REFERENCES chantier(id),
+  quantite_litres numeric(10,2) NOT NULL DEFAULT 0, prix_litre numeric(8,3), montant numeric(12,2),
+  compteur numeric(12,1), station text, num_bon text, plein boolean DEFAULT true,
+  observations text, created_at timestamptz DEFAULT now());
+
+-- Déclaration d'accident de travail (loi 18-12)
+CREATE TABLE IF NOT EXISTS accident_travail (
+  id serial PRIMARY KEY,
+  company_id int REFERENCES company(id),
+  ouvrier_id int REFERENCES ouvrier_chantier(id), employee_id int REFERENCES employee(id),
+  victime_nom text, victime_cin text, victime_cnss text, victime_poste text,
+  chantier_id int REFERENCES chantier(id),
+  type_accident text DEFAULT 'travail',
+  date_accident date, heure_accident text, lieu text,
+  circonstances text, nature_lesion text, siege_lesion text, temoins text,
+  date_info_employeur date, date_decl_assureur date, date_avis_travail date,
+  assureur text, num_police text, certificat_medical boolean DEFAULT false,
+  jours_arret int, gravite text, suites text, statut text DEFAULT 'declare',
+  created_at timestamptz DEFAULT now());
+
+-- Échéancier fiscal & social
+CREATE TABLE IF NOT EXISTS echeance (
+  id serial PRIMARY KEY,
+  company_id int REFERENCES company(id),
+  type text, libelle text, date_echeance date NOT NULL,
+  statut text DEFAULT 'a_faire', date_fait date, montant numeric(14,2), notes text,
+  auto boolean DEFAULT false, created_at timestamptz DEFAULT now());
+
+-- Appels d'offres / soumissions
+CREATE TABLE IF NOT EXISTS appel_offre (
+  id serial PRIMARY KEY,
+  company_id int REFERENCES company(id),
+  objet text, reference text, maitre_ouvrage text,
+  date_publication date, date_limite date, date_ouverture date,
+  montant_estime numeric(14,2), caution_provisoire numeric(14,2),
+  statut text DEFAULT 'a_etudier', date_resultat date, montant_adjuge numeric(14,2),
+  chantier_id int REFERENCES chantier(id), observations text,
+  created_at timestamptz DEFAULT now());
+
+-- Maintenance du matériel
+CREATE TABLE IF NOT EXISTS maintenance (
+  id serial PRIMARY KEY,
+  company_id int REFERENCES company(id),
+  materiel_id int REFERENCES materiel(id),
+  date_maintenance date NOT NULL DEFAULT current_date,
+  type text DEFAULT 'preventive', description text,
+  cout numeric(12,2), compteur numeric(12,1), prestataire text,
+  prochaine_date date, prochain_compteur numeric(12,1), statut text DEFAULT 'fait',
+  created_at timestamptz DEFAULT now());
+
 -- Multi-tenant : rattachement d'un utilisateur à une société (NULL = super-admin)
 ALTER TABLE app_user ADD COLUMN IF NOT EXISTS company_id int REFERENCES company(id);
 
@@ -419,6 +517,8 @@ ALTER TABLE company ADD COLUMN IF NOT EXISTS cnss text;
 ALTER TABLE company ADD COLUMN IF NOT EXISTS rib text;
 ALTER TABLE company ADD COLUMN IF NOT EXISTS logo text;
 ALTER TABLE company ADD COLUMN IF NOT EXISTS tva_taux numeric(5,2) DEFAULT 20;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS forme_juridique text;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS capital text;
 ALTER TABLE company ADD COLUMN IF NOT EXISTS devis_format text DEFAULT 'DEV-{AAAA}-{####}';
 ALTER TABLE company ADD COLUMN IF NOT EXISTS facture_format text DEFAULT 'FAC-{AAAA}-{####}';
 ALTER TABLE company ADD COLUMN IF NOT EXISTS devis_compteur int DEFAULT 0;
@@ -505,6 +605,11 @@ ALTER TABLE incident ADD COLUMN IF NOT EXISTS type_accident text;
 ALTER TABLE controle_securite ADD COLUMN IF NOT EXISTS domaine text;
 ALTER TABLE controle_securite ADD COLUMN IF NOT EXISTS actions_correctives text;
 ALTER TABLE controle_securite ADD COLUMN IF NOT EXISTS echeance date;
+-- Congés (droit marocain)
+ALTER TABLE conge ADD COLUMN IF NOT EXISTS remplacant text;
+ALTER TABLE conge ADD COLUMN IF NOT EXISTS justificatif text;
+ALTER TABLE conge ADD COLUMN IF NOT EXISTS paye boolean DEFAULT true;
+ALTER TABLE conge ADD COLUMN IF NOT EXISTS date_demande date;
 -- Rapport journalier de chantier
 ALTER TABLE rapport_chantier ADD COLUMN IF NOT EXISTS numero text;
 ALTER TABLE rapport_chantier ADD COLUMN IF NOT EXISTS redige_par text;
@@ -551,6 +656,20 @@ async function initDb() {
       ["Atlas Constructions SARL", "001234567000089", "12, Zone Industrielle Sidi Bernoussi", "Casablanca",
        "+212 522 00 00 00", "contact@atlas-constructions.ma", "123456", "45678901", "33445566", "7788990",
        "011 780 0000000000000000 12"]));
+
+  // Remplissage unique et sûr des mentions légales de la société de production
+  // (ne remplit que les champs vides — n'écrase jamais une saisie existante).
+  try {
+    await pool.query(
+      `UPDATE company SET
+         forme_juridique = COALESCE(NULLIF(forme_juridique,''), 'SARL'),
+         ice       = COALESCE(NULLIF(ice,''),       '001835752000047'),
+         rc        = COALESCE(NULLIF(rc,''),        '380851'),
+         if_fiscal = COALESCE(NULLIF(if_fiscal,''), '24814243'),
+         patente   = COALESCE(NULLIF(patente,''),   '34704631'),
+         cnss      = COALESCE(NULLIF(cnss,''),      '5512729')
+       WHERE raison_sociale = 'ARAB AGENCEMENT SARL'`);
+  } catch (e) { /* champs absents : ignoré */ }
 
   await seedIfEmpty("app_user", async () => {
     const email = process.env.ADMIN_EMAIL || "admin@btppro.ma";

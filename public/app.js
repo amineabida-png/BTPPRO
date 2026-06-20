@@ -131,7 +131,7 @@ const VIEW_DOMAIN = {
   articles: "stock", "demandes-achat": "achats", "bons-commande": "achats", fournisseurs: "tiers", clients: "tiers", "sous-traitants": "tiers",
   integrations: null, users: "admin", societe: "admin",
   planning: "chantiers", pointage: "chantiers", tresorerie: "facturation",
-  materiel: "chantiers", rapports: "chantiers", "pv-reunions": "chantiers", alertes: null,
+  materiel: "chantiers", rapports: "chantiers", "pv-reunions": "chantiers", caisse: "chantiers", encaissements: "facturation", garanties: "facturation", gasoil: "achats", accidents: "rh", echeances: "rentabilite", "appels-offres": "facturation", maintenances: "chantiers", alertes: null,
   compta: "rentabilite", journal: "admin", onboarding: "admin", bordereaux: "devis", superadmin: "admin",
 };
 let myPerms = ["*"];
@@ -158,7 +158,7 @@ const ROUTES = {
   documents: renderGED, fournisseurs: renderFournisseurs, clients: renderClients, "sous-traitants": renderSousTraitants,
   integrations: renderIntegrations, societe: renderSociete,
   planning: renderPlanning, pointage: renderPointage, tresorerie: renderTresorerie,
-  materiel: renderMateriel, rapports: renderRapports, "pv-reunions": renderPVReunions, alertes: renderAlertes,
+  materiel: renderMateriel, rapports: renderRapports, "pv-reunions": renderPVReunions, caisse: renderCaisse, encaissements: renderEncaissements, garanties: renderGaranties, gasoil: renderGasoil, accidents: renderAccidents, echeances: renderEcheances, "appels-offres": renderAppelsOffres, maintenances: renderMaintenances, alertes: renderAlertes,
   compta: renderCompta, journal: renderActivite, onboarding: renderOnboarding, bordereaux: renderBordereaux, superadmin: renderSuperAdmin,
 };
 async function show(v) {
@@ -611,7 +611,7 @@ async function delUser(id) { if (confirm("Supprimer cet utilisateur ?")) { try {
 async function renderConges() {
   const [list, soldes] = await Promise.all([api("/api/conges"), api("/api/conges/soldes")]);
   if (!caches.employees) caches.employees = await api("/api/employees");
-  V().innerHTML = `<div class="bar"><div><h1>Congés</h1><div class="sub">Acquisition 1,5 j/mois (Art. 231). Validation hiérarchique + soldes.</div></div>
+  V().innerHTML = `<div class="bar"><div><h1>Congés</h1><div class="sub">Annuel 1,5 j/mois — 18 j/an (Art. 231) · exceptionnels : mariage 4 j, décès proche 3 j, circoncision 2 j (Art. 274) · maternité 14 sem. · paternité 3 j</div></div>
     <button class="btn sm" onclick="addConge()">+ Demande</button></div>
     <div class="card" style="margin-bottom:14px"><div class="colhead">Soldes congés annuels</div>
       <table><thead><tr><th>Matricule</th><th>Salarié</th><th class="r">Acquis</th><th class="r">Pris</th><th class="r">Solde</th></tr></thead><tbody>
@@ -622,12 +622,29 @@ async function renderConges() {
       <td class="r">${c.statut === "demande" ? `<button class="btn sm" onclick="setConge(${c.id},'valide')">Valider</button> <button class="btn sm danger" onclick="setConge(${c.id},'refuse')">Refuser</button>` : ""}</td></tr>`).join("") : `<tr><td colspan="7" class="muted">Aucune demande.</td></tr>`}
     </tbody></table></div>`;
 }
+const CONGE_TYPES = [
+  { value: "annuel", label: "Congé annuel (1,5 j/mois — 18 j/an)" },
+  { value: "mariage_salarie", label: "Mariage du salarié (4 j)" },
+  { value: "mariage_enfant", label: "Mariage d'un enfant (2 j)" },
+  { value: "deces_proche", label: "Décès conjoint/enfant/ascendant (3 j)" },
+  { value: "deces_autre", label: "Décès frère/sœur/beau-parent (2 j)" },
+  { value: "circoncision", label: "Circoncision (2 j)" },
+  { value: "operation_familiale", label: "Opération chirurgicale conjoint/enfant (2 j)" },
+  { value: "maternite", label: "Maternité (14 semaines)" },
+  { value: "paternite", label: "Paternité (3 j)" },
+  { value: "maladie", label: "Maladie (sur certificat médical)" },
+  { value: "sans_solde", label: "Sans solde" },
+  { value: "autre", label: "Autre" },
+];
 async function addConge() {
   const d = await modalForm("Nouvelle demande de congé", [
     { key: "employee_id", label: "Salarié", type: "select", rel: "employees" },
-    { key: "type", label: "Type", type: "select", options: opt(["annuel", "maladie", "maternite", "paternite", "exceptionnel"]) },
+    { key: "type", label: "Type (barème légal marocain)", type: "select", options: CONGE_TYPES },
     { key: "date_debut", label: "Du", type: "date" }, { key: "date_fin", label: "Au", type: "date" },
-    { key: "jours", label: "Jours", type: "number" }, { key: "motif", label: "Motif" }]);
+    { key: "jours", label: "Nombre de jours", type: "number" },
+    { key: "remplacant", label: "Remplaçant pendant l'absence" },
+    { key: "motif", label: "Motif / précisions" },
+    { key: "justificatif", label: "Justificatif (à fournir à la reprise)" }], { type: "annuel", paye: true });
   if (!d) return; await api("/api/conges", { method: "POST", body: JSON.stringify(d) }); renderConges();
 }
 async function setConge(id, statut) { await api(`/api/conges/${id}/statut`, { method: "POST", body: JSON.stringify({ statut }) }); renderConges(); }
@@ -773,7 +790,7 @@ async function avoirFrom(id) {
 async function renderFactures() {
   const list = await api("/api/factures");
   V().innerHTML = `<div class="bar"><div><h1>Factures &amp; situations</h1><div class="sub">Situations de travaux (avancement), retenue de garantie, net à payer.</div></div>
-    <button class="btn sm" onclick="situationFrom()">+ Situation</button></div>
+    <button class="btn sm ghost" onclick="factDirecte()">+ Facture directe</button> <button class="btn sm" onclick="situationFrom()">+ Situation</button></div>
     <div class="card"><table><thead><tr><th>N°</th><th>Client</th><th>Type</th><th class="r">Avanc.</th><th class="r">HT</th><th class="r">TTC</th><th class="r">RG</th><th class="r">Net à payer</th><th>Statut</th><th></th></tr></thead><tbody>
     ${list.length ? list.map((f) => `<tr><td class="mono">${f.numero || f.id}</td><td>${f.client || ""}</td><td><span class="pill">${f.type}</span></td><td class="r">${f.avancement ? f.avancement + " %" : ""}</td><td class="r mono">${fmt(f.montant_ht)}</td><td class="r mono">${fmt(f.montant_ttc)}</td><td class="r mono">${fmt(f.retenue_garantie)}</td><td class="r mono">${fmt(f.net_a_payer || f.montant_ttc)}</td><td><span class="pill">${f.statut}</span></td><td class="r"><button class="btn sm ghost" onclick="downloadDoc('/api/factures/${f.id}/pdf','${f.type}-${f.numero || f.id}.pdf')">📄 PDF</button> ${f.type !== "avoir" ? `<button class="btn sm ghost" onclick="avoirFrom(${f.id})">Avoir</button>` : ""} <button class="btn sm danger" onclick="delFacture(${f.id})">×</button></td></tr>`).join("") : `<tr><td colspan="10" class="muted">Aucune facture.</td></tr>`}
     </tbody></table></div>`;
@@ -790,6 +807,70 @@ async function situationFrom(devisId) {
   catch (e) { alert(e.message); }
 }
 async function delFacture(id) { if (confirm("Supprimer ?")) { await api("/api/factures/" + id, { method: "DELETE" }); renderFactures(); } }
+
+/* ===================== Facture directe (sans devis) ===================== */
+let factLignes = [];
+function factTotaux() {
+  const ht = factLignes.reduce((s, l) => s + (Number(l.quantite) || 0) * (Number(l.pu) || 0), 0);
+  const tva = el("fd-tva") ? Number(el("fd-tva").value) || 0 : 20;
+  const rg = el("fd-rg") ? Number(el("fd-rg").value) || 0 : 0;
+  const mtva = ht * tva / 100, ttc = ht + mtva, mrg = ht * rg / 100, net = ttc - mrg;
+  return { ht, mtva, ttc, mrg, net };
+}
+function factLignesEditor() {
+  return `<table style="margin-top:6px"><thead><tr><th>Désignation</th><th style="width:80px">Qté</th><th style="width:110px">P.U. HT</th><th style="width:120px" class="r">Total HT</th><th></th></tr></thead><tbody>
+    ${factLignes.map((l, i) => `<tr>
+      <td><input value="${(l.designation || "").replace(/"/g, "&quot;")}" oninput="factLignes[${i}].designation=this.value" style="width:100%"></td>
+      <td><input type="number" value="${l.quantite != null ? l.quantite : ""}" oninput="factLignes[${i}].quantite=this.value;factRedraw()" style="width:100%"></td>
+      <td><input type="number" value="${l.pu != null ? l.pu : ""}" oninput="factLignes[${i}].pu=this.value;factRedraw()" style="width:100%"></td>
+      <td class="r mono">${fmt((Number(l.quantite) || 0) * (Number(l.pu) || 0))}</td>
+      <td><button class="btn sm danger" onclick="factLignes.splice(${i},1);factRedraw()">×</button></td></tr>`).join("")}
+  </tbody></table>
+  <button class="btn sm ghost" style="margin-top:6px" onclick="factLignes.push({designation:'',quantite:1,pu:''});factRedraw()">+ Ligne</button>`;
+}
+function factRedraw() {
+  if (el("fd-lignes")) el("fd-lignes").innerHTML = factLignesEditor();
+  const t = factTotaux();
+  if (el("fd-tot")) el("fd-tot").innerHTML = `HT : <b>${fmt(t.ht)}</b> · TVA : <b>${fmt(t.mtva)}</b> · TTC : <b>${fmt(t.ttc)}</b>${t.mrg ? ` · RG : <b>-${fmt(t.mrg)}</b> · Net : <b>${fmt(t.net)}</b>` : ""} MAD`;
+}
+async function factDirecte() {
+  await getCache("chantiers"); await getCache("clients");
+  const chs = caches.chantiers || [], cls = caches.clients || [];
+  factLignes = [{ designation: "", quantite: 1, pu: "" }];
+  el("modal-root").innerHTML = `<div class="overlay"><div class="modal wide"><h3>Nouvelle facture directe</h3>
+    <div class="mform">
+      <div class="field"><label>Client</label><input id="fd-client" list="fd-clients" placeholder="Nom du client"><datalist id="fd-clients">${cls.map((c) => `<option value="${(c.raison_sociale || "").replace(/"/g, "&quot;")}">`).join("")}</datalist></div>
+      <div class="field"><label>ICE client</label><input id="fd-ice"></div>
+      <div class="field"><label>Chantier (optionnel)</label><select id="fd-ch"><option value="">— aucun —</option>${chs.map((c) => `<option value="${c.id}">${c.code} — ${c.nom}</option>`).join("")}</select></div>
+      <div class="field"><label>Date</label><input type="date" id="fd-date" value="${new Date().toISOString().slice(0, 10)}"></div>
+      <div class="field" style="grid-column:1/-1"><label>Objet (optionnel)</label><input id="fd-objet" placeholder="Objet de la facture"></div>
+    </div>
+    <div class="colhead" style="margin-top:8px">Lignes</div>
+    <div id="fd-lignes">${factLignesEditor()}</div>
+    <div class="mform" style="margin-top:10px">
+      <div class="field"><label>TVA (%)</label><input type="number" id="fd-tva" value="20" oninput="factRedraw()"></div>
+      <div class="field"><label>Retenue de garantie (%)</label><input type="number" id="fd-rg" value="0" oninput="factRedraw()"></div>
+    </div>
+    <div id="fd-tot" style="text-align:right;margin-top:8px;font-size:14px"></div>
+    <div class="mactions"><button class="btn ghost" onclick="el('modal-root').innerHTML=''">Annuler</button><button class="btn" onclick="saveFactDirecte()">Créer & imprimer</button></div>
+    </div></div>`;
+  factRedraw();
+}
+async function saveFactDirecte() {
+  const lignes = factLignes.filter((l) => l.designation || l.pu);
+  if (!el("fd-client").value) { alert("Indiquez le client."); return; }
+  if (!lignes.length) { alert("Ajoutez au moins une ligne."); return; }
+  const body = {
+    client: el("fd-client").value, client_ice: el("fd-ice").value, chantier_id: el("fd-ch").value ? +el("fd-ch").value : null,
+    objet: el("fd-objet").value, date_emission: el("fd-date").value, tva_taux: el("fd-tva").value, rg_taux: el("fd-rg").value, contenu: lignes,
+  };
+  try {
+    const f = await api("/api/factures/directe", { method: "POST", body: JSON.stringify(body) });
+    el("modal-root").innerHTML = "";
+    await openDoc("/api/factures/" + f.id + "/pdf");
+    renderFactures();
+  } catch (e) { alert(e.message); }
+}
 
 /* ===================== Stock (valorisation CMUP) ===================== */
 async function renderStock() {
@@ -1240,6 +1321,8 @@ async function renderSociete() {
     <div id="soc-form" class="card"><div class="colhead">Identité &amp; coordonnées</div>
       <div class="form" style="grid-template-columns:repeat(3,1fr)">
         ${f("raison_sociale", "Raison sociale", c.raison_sociale)}
+        ${f("forme_juridique", "Forme juridique (SARL, SA…)", c.forme_juridique)}
+        ${f("capital", "Capital social (DH)", c.capital)}
         ${f("ice", "ICE", c.ice)}
         ${f("rc", "Registre de commerce (RC)", c.rc)}
         ${f("if_fiscal", "Identifiant fiscal (IF)", c.if_fiscal)}
@@ -1739,10 +1822,370 @@ async function viewOuvrier(id) {
 }
 async function delOuvrier(id) { if (confirm("Supprimer cette fiche ouvrier ?")) { await api("/api/ouvriers/" + id, { method: "DELETE" }); renderOuvriers(); } }
 
+/* ===================== Caisse / dépenses de chantier ===================== */
+const CAISSE_CATS = ["matériaux", "carburant", "main_oeuvre", "transport", "location", "sous_traitance", "petit_outillage", "restauration", "administratif", "divers"];
+const MODES_PAIEMENT = ["espèces", "chèque", "virement", "carte", "effet"];
+let caisseFilter = "";
+async function renderCaisse() {
+  await getCache("chantiers");
+  const chs = caches.chantiers || [];
+  const q = caisseFilter ? "?chantier_id=" + caisseFilter : "";
+  const data = await api("/api/caisse" + q);
+  const r = data.resume, mv = data.mouvements;
+  const cats = Object.entries(r.parCategorie || {}).sort((a, b) => b[1] - a[1]);
+  V().innerHTML = `<div class="bar"><div><h1>Caisse de chantier</h1><div class="sub">Dépenses & approvisionnements · espèces déductibles ≤ 5 000 DH/jour/fournisseur · chèque obligatoire ≥ 10 000 DH</div></div>
+    <div style="display:flex;gap:8px"><button class="btn sm ghost" onclick="addCaisse('approvisionnement')">+ Approvisionnement</button><button class="btn sm" onclick="addCaisse('depense')">+ Dépense</button></div></div>
+    <div class="bar" style="margin-bottom:6px"><div><select onchange="caisseFilter=this.value;renderCaisse()" style="padding:8px;border:1px solid var(--line);border-radius:8px">
+      <option value="">Tous les chantiers</option>${chs.map((c) => `<option value="${c.id}" ${caisseFilter == c.id ? "selected" : ""}>${c.code} — ${c.nom}</option>`).join("")}</select></div>
+      <button class="btn sm ghost" onclick="openDoc('/api/caisse/pdf${q}')">📄 Journal de caisse</button></div>
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-l">Solde de caisse</div><div class="kpi-v ${r.solde < 0 ? "neg" : ""}">${fmt(r.solde)} <small>MAD</small></div></div>
+      <div class="kpi"><div class="kpi-l">Approvisionnements</div><div class="kpi-v">${fmt(r.approvisionnements)} <small>MAD</small></div></div>
+      <div class="kpi"><div class="kpi-l">Dépenses</div><div class="kpi-v">${fmt(r.depenses)} <small>MAD</small></div></div>
+    </div>
+    ${cats.length ? `<div class="card" style="margin-bottom:14px"><div class="colhead">Dépenses par catégorie</div><table><tbody>${cats.map((c) => `<tr><td>${c[0].replace(/_/g, " ")}</td><td class="r mono">${fmt(c[1])} MAD</td></tr>`).join("")}</tbody></table></div>` : ""}
+    <div class="card"><table><thead><tr><th>Date</th><th>Type</th><th>Catégorie</th><th>Description</th><th>Bénéficiaire</th><th>Mode</th><th class="r">Montant</th><th></th></tr></thead><tbody>
+    ${mv.length ? mv.map((m) => {
+      const flag = m.type === "depense" && m.mode_paiement === "espèces" && Number(m.montant) > 5000;
+      const flag2 = m.type === "depense" && m.mode_paiement === "espèces" && Number(m.montant) >= 10000;
+      return `<tr><td>${new Date(m.date_mouvement).toLocaleDateString("fr-FR")}</td><td>${m.type === "approvisionnement" ? "↗️ Appro" : "↘️ Dépense"}</td><td>${(m.categorie || "").replace(/_/g, " ")}</td><td>${m.description || ""}${flag2 ? ' <span class="pill" style="background:#fde2e2;color:#c0392b">chèque obligatoire</span>' : flag ? ' <span class="pill" style="background:#fff3cd;color:#8a6d00">déductibilité à risque</span>' : ""}</td><td>${m.beneficiaire || ""}</td><td>${m.mode_paiement || ""}</td><td class="r mono">${m.type === "depense" ? "-" : "+"}${fmt(m.montant)}</td>
+      <td class="r"><button class="btn sm danger" onclick="delCaisse(${m.id})">×</button></td></tr>`;
+    }).join("") : `<tr><td colspan="8" class="muted">Aucun mouvement.</td></tr>`}
+    </tbody></table></div>`;
+}
+async function addCaisse(type) {
+  const fields = [
+    { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" },
+    { key: "date_mouvement", label: "Date", type: "date" }];
+  if (type === "depense") fields.push({ key: "categorie", label: "Catégorie", type: "select", options: opt(CAISSE_CATS) });
+  fields.push(
+    { key: "description", label: type === "depense" ? "Description de la dépense" : "Origine (apport, retrait banque…)" },
+    { key: "beneficiaire", label: type === "depense" ? "Bénéficiaire / fournisseur" : "Déposé par" },
+    { key: "montant", label: "Montant (MAD)", type: "number" },
+    { key: "mode_paiement", label: "Mode de paiement", type: "select", options: opt(MODES_PAIEMENT) },
+    { key: "reference_piece", label: "N° pièce / reçu (justificatif)" });
+  const d = await modalForm(type === "depense" ? "Nouvelle dépense de caisse" : "Approvisionnement de caisse", fields, { date_mouvement: new Date().toISOString().slice(0, 10), mode_paiement: type === "depense" ? "espèces" : "virement" });
+  if (!d) return;
+  d.type = type;
+  if (type === "depense" && d.mode_paiement === "espèces" && Number(d.montant) >= 10000) { if (!confirm("⚠️ Paiement en espèces ≥ 10 000 DH : le chèque est obligatoire (sinon charge non déductible). Enregistrer quand même ?")) return; }
+  else if (type === "depense" && d.mode_paiement === "espèces" && Number(d.montant) > 5000) { if (!confirm("⚠️ Espèces > 5 000 DH/jour : déductibilité fiscale à risque (art. 11 CGI). Enregistrer quand même ?")) return; }
+  await api("/api/caisse", { method: "POST", body: JSON.stringify(d) }); renderCaisse();
+}
+async function delCaisse(id) { if (confirm("Supprimer ce mouvement ?")) { await api("/api/caisse/" + id, { method: "DELETE" }); renderCaisse(); } }
+
+/* ===================== Encaissements & relances impayés ===================== */
+async function renderEncaissements() {
+  const [cre, encs] = await Promise.all([api("/api/creances"), api("/api/encaissements")]);
+  const r = cre.resume, b = r.buckets;
+  V().innerHTML = `<div class="bar"><div><h1>Encaissements & impayés</h1><div class="sub">Suivi des règlements · balance âgée · relances (loi 69-21 : échéance 60 j par défaut, 120 j max)</div></div>
+    <button class="btn sm" onclick="addEncaissement()">+ Encaissement</button></div>
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-l">Total dû</div><div class="kpi-v">${fmt(r.totalDu)} <small>MAD</small></div></div>
+      <div class="kpi"><div class="kpi-l">En retard</div><div class="kpi-v ${r.totalRetard > 0 ? "neg" : ""}">${fmt(r.totalRetard)} <small>MAD</small></div></div>
+      <div class="kpi"><div class="kpi-l">Amende légale estimée (Trésor)</div><div class="kpi-v">${fmt(r.totalPenalite)} <small>MAD</small></div></div>
+    </div>
+    <div class="card" style="margin-bottom:14px"><div class="colhead">Balance âgée (retard)</div>
+      <table><thead><tr><th>0–30 j</th><th>30–60 j</th><th>60–90 j</th><th>+90 j</th></tr></thead>
+      <tbody><tr><td class="mono">${fmt(b.b0_30)}</td><td class="mono">${fmt(b.b30_60)}</td><td class="mono">${fmt(b.b60_90)}</td><td class="mono" style="color:#c0392b">${fmt(b.b90)}</td></tr></tbody></table></div>
+    <div class="card" style="margin-bottom:14px"><div class="colhead">Factures à encaisser</div>
+      <table><thead><tr><th>N°</th><th>Client</th><th>Échéance</th><th class="r">Retard</th><th class="r">Reste dû</th><th class="r">Amende est.</th><th></th></tr></thead><tbody>
+      ${cre.lignes.length ? cre.lignes.map((l) => `<tr><td class="mono">${l.numero || ""}</td><td>${l.client || ""}</td><td>${new Date(l.echeance).toLocaleDateString("fr-FR")}</td>
+        <td class="r ${l.retard > 0 ? "neg" : ""}">${l.retard > 0 ? l.retard + " j" : "—"}</td><td class="r mono">${fmt(l.reste)}</td><td class="r mono">${l.penalite ? fmt(l.penalite) : "—"}</td>
+        <td class="r"><button class="btn sm ghost" onclick="encaisserFacture(${l.id},${l.reste})">Encaisser</button> <button class="btn sm ghost" onclick="openDoc('/api/factures/${l.id}/relance/pdf')">✉️ Relance</button></td></tr>`).join("") : `<tr><td colspan="7" class="muted">Aucune facture impayée. 🎉</td></tr>`}
+      </tbody></table></div>
+    <div class="card"><div class="colhead">Derniers encaissements</div>
+      <table><thead><tr><th>Date</th><th>Facture</th><th>Client</th><th>Mode</th><th class="r">Montant</th><th></th></tr></thead><tbody>
+      ${encs.length ? encs.slice(0, 30).map((e) => `<tr><td>${new Date(e.date_encaissement).toLocaleDateString("fr-FR")}</td><td class="mono">${e.facture_numero || "—"}</td><td>${e.client || ""}</td><td>${e.mode_paiement || ""}</td><td class="r mono">${fmt(e.montant)}</td><td class="r"><button class="btn sm danger" onclick="delEncaissement(${e.id})">×</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucun encaissement.</td></tr>`}
+      </tbody></table></div>`;
+}
+async function addEncaissement(factureId, montant) {
+  const factures = await api("/api/factures");
+  const opts = factures.filter((f) => (f.type || "facture") !== "avoir").map((f) => ({ value: String(f.id), label: `${f.numero || "—"} · ${f.client || ""} · ${fmt(f.net_a_payer || f.montant_ttc)} MAD` }));
+  const d = await modalForm("Nouvel encaissement", [
+    { key: "facture_id", label: "Facture", type: "select", options: opts },
+    { key: "date_encaissement", label: "Date", type: "date" },
+    { key: "montant", label: "Montant reçu (MAD)", type: "number" },
+    { key: "mode_paiement", label: "Mode", type: "select", options: opt(MODES_PAIEMENT) },
+    { key: "reference", label: "Référence (n° chèque, virement…)" }],
+    { facture_id: factureId ? String(factureId) : (opts[0] && opts[0].value), date_encaissement: new Date().toISOString().slice(0, 10), montant: montant || "", mode_paiement: "virement" });
+  if (!d) return;
+  await api("/api/encaissements", { method: "POST", body: JSON.stringify(d) }); renderEncaissements();
+}
+function encaisserFacture(id, reste) { addEncaissement(id, reste); }
+async function delEncaissement(id) { if (confirm("Supprimer cet encaissement ?")) { await api("/api/encaissements/" + id, { method: "DELETE" }); renderEncaissements(); } }
+
+/* ===================== Cautions & retenues de garantie ===================== */
+const GARANTIE_TYPES_FR = [
+  { value: "provisoire", label: "Caution provisoire" },
+  { value: "definitif", label: "Caution définitive" },
+  { value: "restitution_avance", label: "Caution de restitution d'avance" },
+  { value: "retenue_garantie", label: "Retenue de garantie" },
+];
+const GAR_STATUTS = ["en_cours", "liberee", "confisquee", "expiree"];
+async function renderGaranties() {
+  await getCache("chantiers");
+  const data = await api("/api/garanties");
+  const r = data.resume, gs = data.garanties;
+  const typeLabel = (t) => (GARANTIE_TYPES_FR.find((x) => x.value === t) || {}).label || t;
+  V().innerHTML = `<div class="bar"><div><h1>Cautions & retenues de garantie</h1><div class="sub">Marchés · caution provisoire/définitive, RG (10 %/acompte, plafond 7 %) · mainlevée 3 mois après réception définitive (CCAG-T art. 19)</div></div>
+    <div style="display:flex;gap:8px"><button class="btn sm ghost" onclick="openDoc('/api/garanties/etat/pdf')">📄 État</button><button class="btn sm" onclick="garForm()">+ Garantie</button></div></div>
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-l">Total immobilisé (en cours)</div><div class="kpi-v">${fmt(r.immobilise)} <small>MAD</small></div></div>
+      <div class="kpi"><div class="kpi-l">Garanties en cours</div><div class="kpi-v">${r.nb}</div></div>
+      <div class="kpi"><div class="kpi-l">Alertes</div><div class="kpi-v ${r.alertes.length ? "neg" : ""}">${r.alertes.length}</div></div>
+    </div>
+    ${r.alertes.length ? `<div class="card" style="margin-bottom:14px;border-left:3px solid #F5B301"><div class="colhead">⚠️ À traiter</div>${r.alertes.map((a) => `<div style="padding:4px 0">${a.niveau === "mainlevee" ? "🔓" : "⏰"} ${a.message}</div>`).join("")}</div>` : ""}
+    <div class="card"><table><thead><tr><th>Type</th><th>Marché</th><th>Bénéficiaire</th><th class="r">Montant</th><th>Validité</th><th>Mainlevée prévue</th><th>Statut</th><th></th></tr></thead><tbody>
+    ${gs.length ? gs.map((g) => {
+      const ml = g.mainlevee_prevue ? new Date(g.mainlevee_prevue) : null;
+      const retard = ml && g.statut === "en_cours" && ml < new Date();
+      return `<tr><td>${typeLabel(g.type)}</td><td>${g.marche || ""}${g.chantier_code ? '<div class="muted" style="font-size:11px">' + g.chantier_code + "</div>" : ""}</td><td>${g.beneficiaire || ""}</td><td class="r mono">${fmt(g.montant)}</td><td>${g.date_validite ? new Date(g.date_validite).toLocaleDateString("fr-FR") : "—"}</td><td class="${retard ? "neg" : ""}">${ml ? ml.toLocaleDateString("fr-FR") : "—"}${retard ? " ⚠️" : ""}</td><td><span class="pill">${g.statut}</span></td>
+      <td class="r"><button class="btn sm ghost" onclick="garForm(${g.id})">✏️</button> <button class="btn sm ghost" onclick="openDoc('/api/garanties/${g.id}/mainlevee/pdf')">🔓 Mainlevée</button> <button class="btn sm danger" onclick="delGarantie(${g.id})">×</button></td></tr>`;
+    }).join("") : `<tr><td colspan="8" class="muted">Aucune garantie.</td></tr>`}
+    </tbody></table></div>`;
+}
+async function garForm(id) {
+  await getCache("chantiers");
+  const g = id ? await api("/api/garanties/" + id) : {};
+  const chs = caches.chantiers || [];
+  const fields = [
+    { key: "type", label: "Type de garantie", type: "select", options: GARANTIE_TYPES_FR },
+    { key: "marche", label: "Marché / objet" },
+    { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" },
+    { key: "beneficiaire", label: "Bénéficiaire (maître d'ouvrage)" },
+    { key: "montant_marche", label: "Montant du marché (MAD)", type: "number" },
+    { key: "taux", label: "Taux (%) — ex. 3 caution déf., 7 RG", type: "number" },
+    { key: "montant", label: "Montant de la garantie (MAD)", type: "number" },
+    { key: "type_emetteur", label: "Émis par", type: "select", options: opt(["banque", "assurance", "retenue"]) },
+    { key: "emetteur", label: "Banque / assureur" },
+    { key: "num_acte", label: "N° d'acte de caution" },
+    { key: "date_emission", label: "Date d'émission", type: "date" },
+    { key: "date_validite", label: "Validité de l'acte", type: "date" },
+    { key: "date_reception_provisoire", label: "Réception provisoire", type: "date" },
+    { key: "date_reception_definitive", label: "Réception définitive", type: "date" },
+    { key: "date_mainlevee_reelle", label: "Mainlevée effective (si libérée)", type: "date" },
+    { key: "statut", label: "Statut", type: "select", options: opt(GAR_STATUTS) },
+    { key: "observations", label: "Observations", type: "textarea" }];
+  const d = await modalForm(id ? "Modifier la garantie" : "Nouvelle caution / retenue de garantie", fields, id ? g : { type: "definitif", type_emetteur: "banque", statut: "en_cours" });
+  if (!d) return;
+  if (id) await api("/api/garanties/" + id, { method: "PUT", body: JSON.stringify(d) });
+  else await api("/api/garanties", { method: "POST", body: JSON.stringify(d) });
+  renderGaranties();
+}
+async function delGarantie(id) { if (confirm("Supprimer cette garantie ?")) { await api("/api/garanties/" + id, { method: "DELETE" }); renderGaranties(); } }
+
+/* ===================== Gasoil / carburant ===================== */
+async function renderGasoil() {
+  await Promise.all([getCache("materiel"), getCache("chantiers")]);
+  const data = await api("/api/gasoil");
+  const r = data.resume, bons = data.bons;
+  V().innerHTML = `<div class="bar"><div><h1>Gasoil / carburant</h1><div class="sub">Bons de gasoil par engin · suivi de la consommation et du coût</div></div>
+    <div style="display:flex;gap:8px"><button class="btn sm ghost" onclick="openDoc('/api/gasoil/pdf')">📄 Registre</button><button class="btn sm" onclick="gasoilForm()">+ Bon de gasoil</button></div></div>
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-l">Total litres</div><div class="kpi-v">${fmt(r.totLitres)} <small>L</small></div></div>
+      <div class="kpi"><div class="kpi-l">Coût total</div><div class="kpi-v">${fmt(r.totCout)} <small>MAD</small></div></div>
+      <div class="kpi"><div class="kpi-l">Engins suivis</div><div class="kpi-v">${r.engins.length}</div></div>
+    </div>
+    ${r.engins.length ? `<div class="card" style="margin-bottom:14px"><div class="colhead">Consommation par engin</div>
+      <table><thead><tr><th>Engin / véhicule</th><th class="r">Litres</th><th class="r">Coût</th><th class="r">Conso. moy.</th></tr></thead><tbody>
+      ${r.engins.map((e) => `<tr><td>${e.nom}${e.code ? " (" + e.code + ")" : ""}</td><td class="r mono">${fmt(e.litres)} L</td><td class="r mono">${fmt(e.cout)}</td><td class="r">${e.conso != null ? e.conso + " L/100" + e.unite : "—"}</td></tr>`).join("")}
+      </tbody></table></div>` : ""}
+    <div class="card"><table><thead><tr><th>Date</th><th>Engin / véhicule</th><th>Chauffeur</th><th>N° bon</th><th class="r">Compteur</th><th class="r">Litres</th><th class="r">Montant</th><th></th></tr></thead><tbody>
+    ${bons.length ? bons.map((b) => `<tr><td>${new Date(b.date_bon).toLocaleDateString("fr-FR")}</td><td>${b.materiel_nom || b.vehicule || "—"}</td><td>${b.chauffeur || ""}</td><td class="mono">${b.num_bon || ""}</td><td class="r mono">${b.compteur != null ? b.compteur : "—"}</td><td class="r mono">${fmt(b.quantite_litres)}</td><td class="r mono">${b.montant != null ? fmt(b.montant) : "—"}</td>
+      <td class="r"><button class="btn sm danger" onclick="delGasoil(${b.id})">×</button></td></tr>`).join("") : `<tr><td colspan="8" class="muted">Aucun bon.</td></tr>`}
+    </tbody></table></div>`;
+}
+async function gasoilForm() {
+  await Promise.all([getCache("materiel"), getCache("chantiers")]);
+  const d = await modalForm("Nouveau bon de gasoil", [
+    { key: "date_bon", label: "Date", type: "date" },
+    { key: "materiel_id", label: "Engin / matériel", type: "select", rel: "materiel" },
+    { key: "vehicule", label: "… ou véhicule (si non listé)" },
+    { key: "chauffeur", label: "Chauffeur" },
+    { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" },
+    { key: "quantite_litres", label: "Quantité (litres)", type: "number" },
+    { key: "prix_litre", label: "Prix au litre (MAD)", type: "number" },
+    { key: "compteur", label: "Compteur (km / h)", type: "number" },
+    { key: "station", label: "Station / fournisseur" },
+    { key: "num_bon", label: "N° de bon" },
+    { key: "plein", label: "Plein complet ?", type: "select", options: [{ value: "true", label: "Oui" }, { value: "false", label: "Non" }] }],
+    { date_bon: new Date().toISOString().slice(0, 10), plein: "true" });
+  if (!d) return;
+  await api("/api/gasoil", { method: "POST", body: JSON.stringify(d) }); renderGasoil();
+}
+async function delGasoil(id) { if (confirm("Supprimer ce bon ?")) { await api("/api/gasoil/" + id, { method: "DELETE" }); renderGasoil(); } }
+
+/* ===================== Déclaration d'accident de travail ===================== */
+async function renderAccidents() {
+  await Promise.all([getCache("ouvriers"), getCache("employees"), getCache("chantiers")]);
+  const list = await api("/api/accidents");
+  V().innerHTML = `<div class="bar"><div><h1>Accidents du travail</h1><div class="sub">Loi 18-12 · déclaration à l'assureur ET au Directeur régional du travail sous 5 jours · IJ 2/3 dès le 1er jour</div></div>
+    <button class="btn sm" onclick="accidentForm()">+ Déclarer un accident</button></div>
+    <div class="card"><table><thead><tr><th>Date</th><th>Victime</th><th>Type</th><th>Lieu</th><th class="r">Arrêt</th><th>Statut</th><th></th></tr></thead><tbody>
+    ${list.length ? list.map((a) => `<tr><td>${a.date_accident ? new Date(a.date_accident).toLocaleDateString("fr-FR") : "—"}</td><td><b>${a.victime || "—"}</b></td><td>${a.type_accident === "trajet" ? "Trajet" : "Travail"}</td><td>${a.lieu || a.chantier_code || ""}</td><td class="r">${a.jours_arret != null ? a.jours_arret + " j" : "—"}</td><td><span class="pill">${a.statut}</span></td>
+      <td class="r"><button class="btn sm ghost" onclick="accidentForm(${a.id})">✏️</button> <button class="btn sm ghost" onclick="openDoc('/api/accidents/${a.id}/pdf')">📄 Déclaration</button> <button class="btn sm danger" onclick="delAccident(${a.id})">×</button></td></tr>`).join("") : `<tr><td colspan="7" class="muted">Aucun accident déclaré.</td></tr>`}
+    </tbody></table></div>`;
+}
+async function accidentForm(id) {
+  await Promise.all([getCache("ouvriers"), getCache("employees"), getCache("chantiers")]);
+  const a = id ? await api("/api/accidents/" + id) : {};
+  const ouvs = (caches.ouvriers || []).map((o) => ({ value: String(o.id), label: "🧱 " + o.nom + (o.metier ? " (" + o.metier + ")" : "") }));
+  const emps = (caches.employees || []).map((e) => ({ value: String(e.id), label: "👷 " + e.nom + (e.poste ? " (" + e.poste + ")" : "") }));
+  const d = await modalForm(id ? "Modifier la déclaration" : "Déclarer un accident du travail", [
+    { key: "ouvrier_id", label: "Victime — ouvrier (fiche)", type: "select", options: [{ value: "", label: "—" }, ...ouvs] },
+    { key: "employee_id", label: "… ou salarié", type: "select", options: [{ value: "", label: "—" }, ...emps] },
+    { key: "victime_nom", label: "… ou nom (si non listé)" },
+    { key: "type_accident", label: "Type", type: "select", options: [{ value: "travail", label: "Accident du travail" }, { value: "trajet", label: "Accident de trajet" }] },
+    { key: "chantier_id", label: "Chantier", type: "select", rel: "chantiers" },
+    { key: "date_accident", label: "Date de l'accident", type: "date" },
+    { key: "heure_accident", label: "Heure" },
+    { key: "lieu", label: "Lieu précis" },
+    { key: "circonstances", label: "Circonstances détaillées", type: "textarea" },
+    { key: "nature_lesion", label: "Nature de la lésion (fracture, coupure…)" },
+    { key: "siege_lesion", label: "Siège de la lésion (main, jambe…)" },
+    { key: "temoins", label: "Témoins" },
+    { key: "jours_arret", label: "Jours d'arrêt", type: "number" },
+    { key: "gravite", label: "Gravité", type: "select", options: opt(["legere", "moyenne", "grave", "mortelle"]) },
+    { key: "date_info_employeur", label: "Date info par la victime", type: "date" },
+    { key: "date_decl_assureur", label: "Date déclaration assureur", type: "date" },
+    { key: "date_avis_travail", label: "Date avis Dir. régional travail", type: "date" },
+    { key: "assureur", label: "Assureur (auto si fiche ouvrier)" },
+    { key: "num_police", label: "N° police" },
+    { key: "certificat_medical", label: "Certificat médical initial joint", type: "select", options: [{ value: "true", label: "Oui" }, { value: "false", label: "Non" }] },
+    { key: "suites", label: "Suites / observations", type: "textarea" }],
+    id ? a : { type_accident: "travail", date_accident: new Date().toISOString().slice(0, 10) });
+  if (!d) return;
+  if (id) await api("/api/accidents/" + id, { method: "PUT", body: JSON.stringify(d) });
+  else await api("/api/accidents", { method: "POST", body: JSON.stringify(d) });
+  renderAccidents();
+}
+async function delAccident(id) { if (confirm("Supprimer cette déclaration ?")) { await api("/api/accidents/" + id, { method: "DELETE" }); renderAccidents(); } }
+
+/* ===================== Échéancier fiscal & social ===================== */
+const ECH_BADGE = { CNSS: "#2563eb", IR: "#7c3aed", TVA: "#0891b2", IS: "#ca8a04", "69-21": "#dc2626", Autre: "#64748b" };
+async function renderEcheances() {
+  const data = await api("/api/echeances");
+  const r = data.resume; const list = data.echeances;
+  // groupe par mois
+  const groups = {};
+  list.forEach((e) => { const d = new Date(e.date_echeance); const k = d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }); (groups[k] = groups[k] || []).push(e); });
+  V().innerHTML = `<div class="bar"><div><h1>Échéancier fiscal & social</h1><div class="sub">CNSS avant le 10 · IR & TVA avant le 20 · acomptes IS 31/03-30/06-30/09-31/12 · déclaration 69-21 trimestrielle</div></div>
+    <div style="display:flex;gap:8px"><button class="btn sm ghost" onclick="addEcheance()">+ Échéance</button><button class="btn sm" onclick="genererEcheancier()">⚙️ Générer l'échéancier</button></div></div>
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-l">À venir (30 j)</div><div class="kpi-v">${r.aVenir}</div></div>
+      <div class="kpi"><div class="kpi-l">En retard</div><div class="kpi-v ${r.enRetard ? "neg" : ""}">${r.enRetard}</div></div>
+      <div class="kpi"><div class="kpi-l">À faire (total)</div><div class="kpi-v">${r.total}</div></div>
+    </div>
+    ${list.length ? Object.entries(groups).map(([mois, es]) => `<div class="card" style="margin-bottom:12px"><div class="colhead">${mois}</div><table><tbody>
+      ${es.map((e) => `<tr style="${e.statut === "fait" ? "opacity:.5" : ""}"><td style="width:90px">${new Date(e.date_echeance).toLocaleDateString("fr-FR")}</td>
+        <td style="width:70px"><span class="pill" style="background:${ECH_BADGE[e.type] || "#64748b"};color:#fff">${e.type}</span></td>
+        <td>${e.libelle}${e.retard ? ' <span class="pill" style="background:#fde2e2;color:#c0392b">en retard</span>' : ""}</td>
+        <td class="r">${e.statut === "fait" ? "✅ fait" : `<button class="btn sm ghost" onclick="marquerEcheance(${e.id})">Marquer fait</button>`} <button class="btn sm danger" onclick="delEcheance(${e.id})">×</button></td></tr>`).join("")}
+    </tbody></table></div>`).join("") : `<div class="card"><p class="muted">Aucune échéance. Cliquez sur « Générer l'échéancier » pour créer automatiquement les échéances marocaines des 12 prochains mois.</p></div>`}`;
+}
+async function genererEcheancier() {
+  const tva = confirm("TVA mensuelle ? (OK = mensuelle, Annuler = trimestrielle)\n\nMensuelle si CA > 1 000 000 DH.") ? "mensuelle" : "trimestrielle";
+  const salaries = confirm("Avez-vous des salariés déclarés à la CNSS ? (OK = oui)");
+  const r = await api("/api/echeances/generer", { method: "POST", body: JSON.stringify({ tva, salaries }) });
+  alert(r.added + " échéance(s) générée(s) pour les 12 prochains mois.");
+  renderEcheances();
+}
+async function addEcheance() {
+  const d = await modalForm("Nouvelle échéance", [
+    { key: "type", label: "Type", type: "select", options: opt(["CNSS", "IR", "TVA", "IS", "69-21", "Autre"]) },
+    { key: "libelle", label: "Libellé" }, { key: "date_echeance", label: "Date", type: "date" },
+    { key: "montant", label: "Montant (optionnel)", type: "number" }, { key: "notes", label: "Notes" }]);
+  if (!d) return; await api("/api/echeances", { method: "POST", body: JSON.stringify(d) }); renderEcheances();
+}
+async function marquerEcheance(id) { await api("/api/echeances/" + id, { method: "PUT", body: JSON.stringify({ statut: "fait", date_fait: new Date().toISOString().slice(0, 10) }) }); renderEcheances(); }
+async function delEcheance(id) { if (confirm("Supprimer ?")) { await api("/api/echeances/" + id, { method: "DELETE" }); renderEcheances(); } }
+
+/* ===================== Appels d'offres ===================== */
+const AO_STATUTS = ["a_etudier", "en_preparation", "soumis", "gagne", "perdu", "sans_suite"];
+async function renderAppelsOffres() {
+  await getCache("chantiers");
+  const data = await api("/api/appels-offres");
+  const r = data.resume; const list = data.appels;
+  V().innerHTML = `<div class="bar"><div><h1>Appels d'offres</h1><div class="sub">Pipeline des marchés · dates limites · caution provisoire · taux de réussite</div></div>
+    <button class="btn sm" onclick="aoForm()">+ Appel d'offres</button></div>
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-l">En cours</div><div class="kpi-v">${r.enCours}</div></div>
+      <div class="kpi"><div class="kpi-l">Pipeline estimé</div><div class="kpi-v">${fmt(r.pipeline)} <small>MAD</small></div></div>
+      <div class="kpi"><div class="kpi-l">Taux de réussite</div><div class="kpi-v">${r.tauxReussite != null ? r.tauxReussite + " %" : "—"}</div></div>
+    </div>
+    <div class="card"><table><thead><tr><th>Objet</th><th>Maître d'ouvrage</th><th>Date limite</th><th class="r">Montant est.</th><th class="r">Caution</th><th>Statut</th><th></th></tr></thead><tbody>
+    ${list.length ? list.map((a) => `<tr><td><b>${a.objet || ""}</b>${a.reference ? '<div class="muted" style="font-size:11px">' + a.reference + "</div>" : ""}</td><td>${a.maitre_ouvrage || ""}</td>
+      <td class="${a.urgent ? "neg" : ""}">${a.date_limite ? new Date(a.date_limite).toLocaleDateString("fr-FR") : "—"}${a.urgent ? " ⏰" : ""}</td>
+      <td class="r mono">${a.montant_estime ? fmt(a.montant_estime) : "—"}</td><td class="r mono">${a.caution_provisoire ? fmt(a.caution_provisoire) : "—"}</td><td><span class="pill">${(a.statut || "").replace(/_/g, " ")}</span></td>
+      <td class="r"><button class="btn sm ghost" onclick="aoForm(${a.id})">✏️</button> <button class="btn sm danger" onclick="delAO(${a.id})">×</button></td></tr>`).join("") : `<tr><td colspan="7" class="muted">Aucun appel d'offres.</td></tr>`}
+    </tbody></table></div>`;
+}
+async function aoForm(id) {
+  await getCache("chantiers");
+  const a = id ? await api("/api/appels-offres/" + id) : {};
+  const d = await modalForm(id ? "Modifier l'appel d'offres" : "Nouvel appel d'offres", [
+    { key: "objet", label: "Objet du marché" }, { key: "reference", label: "Référence / N° AO" },
+    { key: "maitre_ouvrage", label: "Maître d'ouvrage" },
+    { key: "date_publication", label: "Date de publication", type: "date" },
+    { key: "date_limite", label: "Date limite de remise", type: "date" },
+    { key: "date_ouverture", label: "Date d'ouverture des plis", type: "date" },
+    { key: "montant_estime", label: "Montant estimé (MAD)", type: "number" },
+    { key: "caution_provisoire", label: "Caution provisoire (MAD)", type: "number" },
+    { key: "statut", label: "Statut", type: "select", options: opt(AO_STATUTS) },
+    { key: "date_resultat", label: "Date du résultat", type: "date" },
+    { key: "montant_adjuge", label: "Montant adjugé (si gagné)", type: "number" },
+    { key: "observations", label: "Observations", type: "textarea" }],
+    id ? a : { statut: "a_etudier" });
+  if (!d) return;
+  if (id) await api("/api/appels-offres/" + id, { method: "PUT", body: JSON.stringify(d) });
+  else await api("/api/appels-offres", { method: "POST", body: JSON.stringify(d) });
+  renderAppelsOffres();
+}
+async function delAO(id) { if (confirm("Supprimer ?")) { await api("/api/appels-offres/" + id, { method: "DELETE" }); renderAppelsOffres(); } }
+
+/* ===================== Maintenance du matériel ===================== */
+async function renderMaintenances() {
+  await getCache("materiel");
+  const data = await api("/api/maintenances");
+  const r = data.resume; const list = data.maintenances;
+  V().innerHTML = `<div class="bar"><div><h1>Maintenance du matériel</h1><div class="sub">Entretien préventif & curatif · échéancier d'entretien · coûts</div></div>
+    <button class="btn sm" onclick="maintForm()">+ Intervention</button></div>
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-l">À prévoir (30 j)</div><div class="kpi-v ${r.aPrevoir.length ? "neg" : ""}">${r.aPrevoir.length}</div></div>
+      <div class="kpi"><div class="kpi-l">Coût total</div><div class="kpi-v">${fmt(r.coutTotal)} <small>MAD</small></div></div>
+      <div class="kpi"><div class="kpi-l">Interventions</div><div class="kpi-v">${r.nb}</div></div>
+    </div>
+    ${r.aPrevoir.length ? `<div class="card" style="margin-bottom:14px;border-left:3px solid #F5B301"><div class="colhead">⏰ Entretiens à prévoir</div>${r.aPrevoir.map((m) => `<div style="padding:4px 0">🔧 ${m.code ? m.code + " — " : ""}${m.designation} → ${new Date(m.prochaine_maintenance).toLocaleDateString("fr-FR")}</div>`).join("")}</div>` : ""}
+    <div class="card"><table><thead><tr><th>Date</th><th>Matériel</th><th>Type</th><th>Description</th><th>Prestataire</th><th class="r">Coût</th><th>Prochaine</th><th></th></tr></thead><tbody>
+    ${list.length ? list.map((m) => `<tr><td>${new Date(m.date_maintenance).toLocaleDateString("fr-FR")}</td><td>${m.materiel_nom || "—"}</td><td>${m.type === "curative" ? "Curative" : "Préventive"}</td><td>${m.description || ""}</td><td>${m.prestataire || ""}</td><td class="r mono">${m.cout != null ? fmt(m.cout) : "—"}</td><td>${m.prochaine_date ? new Date(m.prochaine_date).toLocaleDateString("fr-FR") : "—"}</td>
+      <td class="r"><button class="btn sm ghost" onclick="maintForm(${m.id})">✏️</button> <button class="btn sm danger" onclick="delMaint(${m.id})">×</button></td></tr>`).join("") : `<tr><td colspan="8" class="muted">Aucune intervention.</td></tr>`}
+    </tbody></table></div>`;
+}
+async function maintForm(id) {
+  await getCache("materiel");
+  let m = {};
+  if (id) { const list = (await api("/api/maintenances")).maintenances; m = list.find((x) => x.id === id) || {}; }
+  const d = await modalForm(id ? "Modifier l'intervention" : "Nouvelle intervention de maintenance", [
+    { key: "materiel_id", label: "Matériel / engin", type: "select", rel: "materiel" },
+    { key: "date_maintenance", label: "Date", type: "date" },
+    { key: "type", label: "Type", type: "select", options: [{ value: "preventive", label: "Préventive" }, { value: "curative", label: "Curative (panne)" }] },
+    { key: "description", label: "Description des travaux", type: "textarea" },
+    { key: "prestataire", label: "Prestataire / garage" },
+    { key: "cout", label: "Coût (MAD)", type: "number" },
+    { key: "compteur", label: "Compteur (km / h)", type: "number" },
+    { key: "prochaine_date", label: "Prochaine maintenance prévue", type: "date" }],
+    id ? m : { type: "preventive", date_maintenance: new Date().toISOString().slice(0, 10) });
+  if (!d) return;
+  if (id) await api("/api/maintenances/" + id, { method: "PUT", body: JSON.stringify(d) });
+  else await api("/api/maintenances", { method: "POST", body: JSON.stringify(d) });
+  renderMaintenances();
+}
+async function delMaint(id) { if (confirm("Supprimer ?")) { await api("/api/maintenances/" + id, { method: "DELETE" }); renderMaintenances(); } }
+
 /* ===================== Centre d'alertes ===================== */
 async function renderAlertes() {
   const d = await api("/api/alertes");
-  const ic = { stock: "📦", securite: "⛑️", conges: "🌴", materiel: "🚜", planning: "📅", tresorerie: "💰" };
+  const ic = { stock: "📦", securite: "⛑️", conges: "🌴", materiel: "🚜", planning: "📅", tresorerie: "💰", garanties: "🛡️", echeances: "🗓️", appels: "📣", maintenance: "🔧", accidents: "🚑" };
   V().innerHTML = `<div class="bar"><div><h1>Centre d'alertes</h1><div class="sub">${d.total ? d.total + " point(s) d'attention" : "Tout est à jour"}</div></div></div>
   ${d.alertes.length ? `<div class="grid" style="gap:12px">${d.alertes.map((a) => `<button class="card" style="display:flex;align-items:center;gap:14px;text-align:left;cursor:pointer;border-left:4px solid ${a.severite === "alerte" ? "var(--rose)" : "var(--amber)"}" onclick="show('${a.view}')">
     <span style="font-size:24px">${ic[a.type] || "🔔"}</span>
