@@ -482,7 +482,14 @@ CREATE TABLE IF NOT EXISTS maintenance (
   prochaine_date date, prochain_compteur numeric(12,1), statut text DEFAULT 'fait',
   created_at timestamptz DEFAULT now());
 
--- Multi-tenant : rattachement d'un utilisateur à une société (NULL = super-admin)
+-- Sauvegardes automatiques (snapshots de données conservés en base)
+CREATE TABLE IF NOT EXISTS backup_snapshot (
+  id serial PRIMARY KEY,
+  created_at timestamptz DEFAULT now(),
+  origine text DEFAULT 'auto',
+  tables_count int, rows_count int, size_bytes bigint,
+  data text);
+
 ALTER TABLE app_user ADD COLUMN IF NOT EXISTS company_id int REFERENCES company(id);
 
 -- Abonnement (vente SaaS)

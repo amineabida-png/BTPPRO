@@ -126,7 +126,7 @@ async function disable2FA() {
 }
 
 const VIEW_DOMAIN = {
-  dash: "dashboard", rentabilite: "rentabilite", emps: "rh", ouvriers: "rh", organigramme: "rh", paie: "paie", conges: "conges", runs: "paie",
+  dash: "dashboard", guide: null, sauvegardes: "admin", rentabilite: "rentabilite", emps: "rh", ouvriers: "rh", organigramme: "rh", paie: "paie", conges: "conges", runs: "paie",
   chantiers: "chantiers", incidents: "securite", documents: "ged", ouvrages: "devis", devis: "devis", factures: "facturation",
   articles: "stock", "demandes-achat": "achats", "bons-commande": "achats", fournisseurs: "tiers", clients: "tiers", "sous-traitants": "tiers",
   integrations: null, users: "admin", societe: "admin",
@@ -151,7 +151,7 @@ async function loadPerms() {
 /* ===================== Navigation ===================== */
 document.querySelectorAll(".nav").forEach((b) => (b.onclick = () => { show(b.dataset.view); document.getElementById("app").classList.remove("side-open"); }));
 const ROUTES = {
-  dash: renderDash, rentabilite: renderRentabilite, users: renderUsers, emps: renderEmps, ouvriers: renderOuvriers,
+  dash: renderDash, guide: renderGuide, sauvegardes: renderSauvegardes, rentabilite: renderRentabilite, users: renderUsers, emps: renderEmps, ouvriers: renderOuvriers,
   organigramme: renderOrganigramme, paie: renderPaie, conges: renderConges, runs: renderRuns,
   ouvrages: renderOuvrages, devis: renderDevis, factures: renderFactures, articles: renderStock,
   "bons-commande": renderCommandes, chantiers: renderChantiers, incidents: renderSecurite,
@@ -299,8 +299,114 @@ function editFournisseur(id) { const o = findCached("fournisseurs", id); if (o) 
 function editST(id) { const o = findCached("sous-traitants", id); if (o) editEntity("/api/sous-traitants", [{ key: "raison_sociale", label: "Raison sociale" }, { key: "specialite", label: "Spécialité" }, { key: "contact", label: "Contact" }, { key: "telephone", label: "Téléphone" }], o, () => renderSousTraitants()); }
 function editMod(key, id) { const m = MOD[key]; const o = (caches["mod:" + key] || []).find((x) => x.id === id); if (o) editEntity(m.ep, m.fields, o, () => { if (m.cache) clearCache(m.cache); renderMod(key); }); }
 function companyName() { const c = (window._companies || []).find((x) => String(x.id) === String(activeCompany)); return c ? c.raison_sociale : "Société"; }
+/* ===================== Sauvegardes ===================== */
+function fmtBytes(b) { b = Number(b) || 0; if (b < 1024) return b + " o"; if (b < 1048576) return (b / 1024).toFixed(1) + " Ko"; return (b / 1048576).toFixed(2) + " Mo"; }
+async function renderSauvegardes() {
+  let data;
+  try { data = await api("/api/backup/snapshots"); }
+  catch (e) { V().innerHTML = `<div class="bar"><h1>Sauvegardes</h1></div><div class="card">${emptyState("🔒", "Réservé au super-administrateur", "Connectez-vous avec le compte super-administrateur pour gérer les sauvegardes complètes des données.", "", "")}</div>`; return; }
+  const snaps = data.snapshots || [];
+  const last = data.lastDownload ? new Date(data.lastDownload) : null;
+  const lastTxt = last ? last.toLocaleString("fr-FR") : "jamais";
+  const vieux = !last || (Date.now() - last.getTime()) > 7 * 86400000;
+  V().innerHTML = `<div class="bar"><div><h1>Sauvegardes</h1><div class="sub">Protégez vos données : téléchargez régulièrement une copie hors-ligne (gratuit, aucun abonnement en plus).</div></div>
+    <button class="btn" onclick="telechargerSauvegarde()">⬇️ Télécharger une sauvegarde</button></div>
+
+    ${vieux ? `<div class="card" style="border-left:3px solid #F5B301;margin-bottom:14px">⚠️ Dernière sauvegarde téléchargée : <b>${lastTxt}</b>. Pensez à en télécharger une régulièrement et à la conserver ailleurs (Google Drive, disque externe…).</div>` : `<div class="muted" style="margin-bottom:14px">Dernière sauvegarde téléchargée : ${lastTxt}.</div>`}
+
+    <div class="card" style="margin-bottom:14px">
+      <div class="colhead">Sauvegardes automatiques (conservées dans l'app — 3 dernières)</div>
+      <div style="display:flex;justify-content:flex-end;margin-bottom:8px"><button class="btn sm ghost" onclick="creerSnapshot()">+ Créer un point de sauvegarde</button></div>
+      <table><thead><tr><th>Date</th><th>Origine</th><th class="r">Tables</th><th class="r">Lignes</th><th class="r">Taille</th><th></th></tr></thead><tbody>
+      ${snaps.length ? snaps.map((s) => `<tr><td>${new Date(s.created_at).toLocaleString("fr-FR")}</td><td><span class="pill">${s.origine}</span></td><td class="r mono">${s.tables_count}</td><td class="r mono">${s.rows_count}</td><td class="r mono">${fmtBytes(s.size_bytes)}</td><td class="r"><button class="btn sm ghost" onclick="downloadDoc('/api/backup/snapshots/${s.id}/download','btp360-snapshot-${s.id}.json')">⬇️</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucun snapshot pour l'instant (le premier est créé automatiquement peu après le démarrage).</td></tr>`}
+      </tbody></table>
+    </div>
+
+    <div class="card" style="margin-bottom:14px;border-left:3px solid #c0392b">
+      <div class="colhead" style="color:#c0392b">⚠️ Restaurer depuis une sauvegarde</div>
+      <p class="muted" style="font-size:13px">Remplace <b>toutes</b> les données actuelles par celles du fichier. Action irréversible — un point de sauvegarde est créé automatiquement juste avant. À n'utiliser qu'en cas de problème.</p>
+      <input type="file" id="restoreFile" accept="application/json,.json" style="margin:6px 0">
+      <div style="margin:8px 0"><label class="muted" style="font-size:13px">Tapez <b>RESTAURER</b> pour confirmer :</label> <input id="restoreConfirm" placeholder="RESTAURER" style="padding:8px;border:1px solid var(--line);border-radius:8px"></div>
+      <button class="btn danger" onclick="restaurerSauvegarde()">Restaurer maintenant</button>
+    </div>
+
+    <div class="card">
+      <div class="colhead">✅ Votre sauvegarde gratuite — comment faire</div>
+      <p style="font-size:13.5px">Aucun abonnement ni service supplémentaire à payer. Votre sauvegarde, c'est le <b>fichier JSON</b> que vous téléchargez et que vous gardez en lieu sûr :</p>
+      <ol style="font-size:13.5px;line-height:1.7">
+        <li>Cliquez sur <b>« ⬇️ Télécharger une sauvegarde »</b> (en haut) — une fois par semaine, c'est idéal.</li>
+        <li>Enregistrez le fichier <b>ailleurs que sur l'app</b> : Google Drive, e-mail à vous-même, clé USB ou disque externe.</li>
+        <li>En cas de problème, revenez ici et utilisez <b>« Restaurer depuis une sauvegarde »</b> avec ce fichier.</li>
+      </ol>
+      <p class="muted" style="font-size:12.5px">Les points de sauvegarde automatiques ci-dessus restent dans la base (quelques Mo, coût négligeable) et servent de filet rapide. La vraie sécurité, c'est le fichier que vous gardez en dehors de l'application.</p>
+    </div>`;
+}
+async function telechargerSauvegarde() {
+  await downloadDoc("/api/backup/download", "btp360-sauvegarde-" + new Date().toISOString().slice(0, 10) + ".json");
+  setTimeout(renderSauvegardes, 800);
+}
+async function creerSnapshot() {
+  try { const r = await api("/api/backup/snapshot", { method: "POST", body: "{}" }); alert("Point de sauvegarde créé (" + r.rows + " lignes, " + r.tables + " tables)."); renderSauvegardes(); }
+  catch (e) { alert("Erreur : " + e.message); }
+}
+async function restaurerSauvegarde() {
+  const file = document.getElementById("restoreFile").files[0];
+  const confirm = document.getElementById("restoreConfirm").value.trim();
+  if (!file) { alert("Choisissez d'abord un fichier de sauvegarde (.json)."); return; }
+  if (confirm !== "RESTAURER") { alert('Tapez exactement « RESTAURER » pour confirmer.'); return; }
+  if (!window.confirm("Dernière confirmation : remplacer TOUTES les données actuelles par le contenu du fichier ?")) return;
+  let backup;
+  try { backup = JSON.parse(await file.text()); } catch (e) { alert("Fichier illisible : " + e.message); return; }
+  try {
+    const r = await api("/api/backup/restore", { method: "POST", body: JSON.stringify({ confirm: "RESTAURER", backup }) });
+    alert("Restauration terminée (" + r.tables + " tables). L'application va se recharger.");
+    location.reload();
+  } catch (e) { alert("Échec de la restauration : " + e.message); }
+}
+function emptyState(icon, titre, texte, btnLabel, btnAction) {
+  return `<div class="empty"><div class="empty-ic">${icon}</div><div class="empty-t">${titre}</div><div class="empty-x">${texte}</div>${btnLabel ? `<button class="btn" onclick="${btnAction}">${btnLabel}</button>` : ""}</div>`;
+}
+async function guideCardHTML() {
+  try {
+    const g = await api("/api/guide");
+    if (g.termine) return "";
+    return `<div class="card guide-card" onclick="show('guide')" style="cursor:pointer;margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+        <div style="font-size:30px">🚀</div>
+        <div style="flex:1;min-width:180px">
+          <div style="font-weight:700;font-size:15px">Bien démarrer avec BTP360</div>
+          <div class="muted" style="font-size:13px">${g.faits}/${g.total} étapes complétées — continuez la configuration.</div>
+          <div class="gp" style="margin-top:8px"><div class="gp-fill" style="width:${g.pct}%"></div></div>
+        </div>
+        <button class="btn sm" onclick="event.stopPropagation();show('guide')">Ouvrir le guide →</button>
+      </div></div>`;
+  } catch (e) { return ""; }
+}
+async function renderGuide() {
+  const g = await api("/api/guide");
+  const stepRow = (s, i) => `<div class="gstep ${s.fait ? "done" : ""}">
+    <div class="gstep-n">${s.fait ? "✓" : i + 1}</div>
+    <div class="gstep-b"><div class="gstep-t">${s.titre}</div><div class="gstep-w">${s.pourquoi}</div></div>
+    <div class="gstep-a">${s.fait ? '<span class="pill" style="background:#e6f4ec;color:#1f7a4d">Fait</span>' : `<button class="btn sm" onclick="show('${s.view}')">Ouvrir</button>`}</div>
+  </div>`;
+  V().innerHTML = `<div class="bar"><div><h1>Guide de démarrage</h1><div class="sub">Configurez l'essentiel en quelques étapes — chaque étape se valide automatiquement.</div></div></div>
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <div style="font-size:34px">${g.termine ? "🎉" : "🚀"}</div>
+        <div style="flex:1;min-width:200px">
+          <div style="font-weight:700;font-size:16px">${g.termine ? "Bravo, tout est configuré !" : `${g.faits} étape(s) sur ${g.total} complétée(s)`}</div>
+          <div class="gp" style="margin-top:8px"><div class="gp-fill" style="width:${g.pct}%"></div></div>
+        </div>
+        <div style="font-family:var(--mono,monospace);font-weight:800;font-size:22px">${g.pct}%</div>
+      </div>
+    </div>
+    <div class="gsteps">${g.steps.map(stepRow).join("")}</div>
+    ${g.termine ? `<div class="card" style="margin-top:16px;text-align:center"><p>Votre espace est prêt. Vous pouvez masquer ce guide — il reste accessible dans le menu Pilotage.</p><button class="btn" onclick="show('dash')">Aller au tableau de bord</button></div>` : ""}`;
+}
+
 async function renderDash() {
   const d = await api("/api/dashboard");
+  const guideCard = await guideCardHTML();
   const card = (lbl, val, unit, cls, ic) => `<div class="card kpi ${cls || ""}"><span class="ic">${ic || ""}</span><div class="lbl">${lbl}</div><div class="val mono">${val} <small>${unit || ""}</small></div></div>`;
   const money = [
     card("Effectif", d.effectif, "", "flat", "👷"),
@@ -324,6 +430,7 @@ async function renderDash() {
   V().innerHTML = `
     <div class="hero"><div class="co">${companyName()}</div><h1>Tableau de bord</h1>
       <div class="per">Exercice ${period.annee} · ${MOIS[period.mois - 1]}</div></div>
+    ${guideCard}
     <div class="grid kpis">${money.join("")}</div>
     <div class="grid kpis" style="margin-top:14px">${op.join("")}</div>
     <div class="card" style="margin-top:18px"><div class="colhead">Structure de la masse salariale (mensuelle)</div>
@@ -375,7 +482,7 @@ async function renderRentabilite() {
     </div>
     <div class="card" style="margin-top:16px"><div class="colhead">CA facturé vs coût réel par chantier</div>
       ${d.chantiers.length ? `<div class="chart">${bars}</div>
-      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px"><span><span class="dot ca"></span> CA facturé</span><span><span class="dot cost"></span> Coût réel</span></div>` : `<div class="muted">Aucun chantier.</div>`}
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px"><span><span class="dot ca"></span> CA facturé</span><span><span class="dot cost"></span> Coût réel</span></div>` : `<div class="muted">Aucun chantier pour l'instant. Créez votre premier chantier pour suivre budget, pointage, dépenses et rentabilité.</div>`}
     </div>
     <div class="card" style="margin-top:16px"><div class="colhead">Rentabilité par chantier</div>
       <table><thead><tr><th>Code</th><th>Nom</th><th>Statut</th><th class="r">Budget prévu</th><th class="r">Coût réel</th><th class="r">CA facturé</th><th class="r">Marge</th><th class="r">Taux</th></tr></thead><tbody>
@@ -717,7 +824,7 @@ async function renderDevis() {
     <div class="card"><table><thead><tr><th>N°</th><th>Client</th><th>Objet</th><th class="r">TTC</th><th>Statut</th><th></th></tr></thead><tbody>
     ${list.length ? list.map((d) => `<tr><td class="mono">${d.numero || d.id}</td><td>${d.client || ""}</td><td>${d.objet || ""}</td><td class="r mono">${fmt(d.total_ttc)}</td>
       <td><select class="stsel" onchange="setDevisStatut(${d.id},this.value)">${stOpt(d.statut || "brouillon")}</select></td>
-      <td class="r"><button class="btn sm ghost" onclick="downloadDoc('/api/devis/${d.id}/pdf','devis-${d.numero || d.id}.pdf')">📄</button> ${d.statut !== "facture" ? `<button class="btn sm" onclick="facturerDevis(${d.id})">Facturer</button>` : ""} <button class="btn sm ghost" onclick="situationFrom(${d.id})">Situation</button> <button class="btn sm ghost" onclick="acompteFrom(${d.id})">Acompte</button> <button class="btn sm danger" onclick="delDevis(${d.id})">×</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucun devis.</td></tr>`}
+      <td class="r"><button class="btn sm ghost" onclick="downloadDoc('/api/devis/${d.id}/pdf','devis-${d.numero || d.id}.pdf')">📄</button> ${d.statut !== "facture" ? `<button class="btn sm" onclick="facturerDevis(${d.id})">Facturer</button>` : ""} <button class="btn sm ghost" onclick="situationFrom(${d.id})">Situation</button> <button class="btn sm ghost" onclick="acompteFrom(${d.id})">Acompte</button> <button class="btn sm danger" onclick="delDevis(${d.id})">×</button></td></tr>`).join("") : `<tr><td colspan="6" class="muted">Aucun devis. Cliquez sur « + Devis » pour chiffrer vos premiers travaux (déboursé, marge, prix de vente).</td></tr>`}
     </tbody></table></div>`;
 }
 async function setDevisStatut(id, statut) { try { await api("/api/devis/" + id, { method: "PUT", body: JSON.stringify({ statut }) }); } catch (e) { alert(e.message); } }
@@ -792,7 +899,7 @@ async function renderFactures() {
   V().innerHTML = `<div class="bar"><div><h1>Factures &amp; situations</h1><div class="sub">Situations de travaux (avancement), retenue de garantie, net à payer.</div></div>
     <button class="btn sm ghost" onclick="factDirecte()">+ Facture directe</button> <button class="btn sm" onclick="situationFrom()">+ Situation</button></div>
     <div class="card"><table><thead><tr><th>N°</th><th>Client</th><th>Type</th><th class="r">Avanc.</th><th class="r">HT</th><th class="r">TTC</th><th class="r">RG</th><th class="r">Net à payer</th><th>Statut</th><th></th></tr></thead><tbody>
-    ${list.length ? list.map((f) => `<tr><td class="mono">${f.numero || f.id}</td><td>${f.client || ""}</td><td><span class="pill">${f.type}</span></td><td class="r">${f.avancement ? f.avancement + " %" : ""}</td><td class="r mono">${fmt(f.montant_ht)}</td><td class="r mono">${fmt(f.montant_ttc)}</td><td class="r mono">${fmt(f.retenue_garantie)}</td><td class="r mono">${fmt(f.net_a_payer || f.montant_ttc)}</td><td><span class="pill">${f.statut}</span></td><td class="r"><button class="btn sm ghost" onclick="downloadDoc('/api/factures/${f.id}/pdf','${f.type}-${f.numero || f.id}.pdf')">📄 PDF</button> ${f.type !== "avoir" ? `<button class="btn sm ghost" onclick="avoirFrom(${f.id})">Avoir</button>` : ""} <button class="btn sm danger" onclick="delFacture(${f.id})">×</button></td></tr>`).join("") : `<tr><td colspan="10" class="muted">Aucune facture.</td></tr>`}
+    ${list.length ? list.map((f) => `<tr><td class="mono">${f.numero || f.id}</td><td>${f.client || ""}</td><td><span class="pill">${f.type}</span></td><td class="r">${f.avancement ? f.avancement + " %" : ""}</td><td class="r mono">${fmt(f.montant_ht)}</td><td class="r mono">${fmt(f.montant_ttc)}</td><td class="r mono">${fmt(f.retenue_garantie)}</td><td class="r mono">${fmt(f.net_a_payer || f.montant_ttc)}</td><td><span class="pill">${f.statut}</span></td><td class="r"><button class="btn sm ghost" onclick="downloadDoc('/api/factures/${f.id}/pdf','${f.type}-${f.numero || f.id}.pdf')">📄 PDF</button> ${f.type !== "avoir" ? `<button class="btn sm ghost" onclick="avoirFrom(${f.id})">Avoir</button>` : ""} <button class="btn sm danger" onclick="delFacture(${f.id})">×</button></td></tr>`).join("") : `<tr><td colspan="10" class="muted">Aucune facture. Créez-en une depuis un devis (bouton « Facturer ») ou en facture directe.</td></tr>`}
     </tbody></table></div>`;
 }
 async function situationFrom(devisId) {
@@ -2185,7 +2292,7 @@ async function delMaint(id) { if (confirm("Supprimer ?")) { await api("/api/main
 /* ===================== Centre d'alertes ===================== */
 async function renderAlertes() {
   const d = await api("/api/alertes");
-  const ic = { stock: "📦", securite: "⛑️", conges: "🌴", materiel: "🚜", planning: "📅", tresorerie: "💰", garanties: "🛡️", echeances: "🗓️", appels: "📣", maintenance: "🔧", accidents: "🚑" };
+  const ic = { stock: "📦", securite: "⛑️", conges: "🌴", materiel: "🚜", planning: "📅", tresorerie: "💰", garanties: "🛡️", echeances: "🗓️", appels: "📣", maintenance: "🔧", accidents: "🚑", backup: "💾" };
   V().innerHTML = `<div class="bar"><div><h1>Centre d'alertes</h1><div class="sub">${d.total ? d.total + " point(s) d'attention" : "Tout est à jour"}</div></div></div>
   ${d.alertes.length ? `<div class="grid" style="gap:12px">${d.alertes.map((a) => `<button class="card" style="display:flex;align-items:center;gap:14px;text-align:left;cursor:pointer;border-left:4px solid ${a.severite === "alerte" ? "var(--rose)" : "var(--amber)"}" onclick="show('${a.view}')">
     <span style="font-size:24px">${ic[a.type] || "🔔"}</span>

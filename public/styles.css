@@ -282,3 +282,22 @@ thead th[data-sortable]:hover{color:var(--asphalt)}
 @media(max-width:860px){ .brand-slogan{padding:0 8px 10px} }
 
 .ta{width:100%;font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;resize:vertical}
+
+/* ===== Guide de démarrage ===== */
+.gp{height:8px;background:#e9ebef;border-radius:99px;overflow:hidden}
+.gp-fill{height:100%;background:linear-gradient(90deg,var(--hazard),#ffcf4a);border-radius:99px;transition:width .4s}
+.guide-card{border-left:3px solid var(--hazard)}
+.gsteps{display:flex;flex-direction:column;gap:10px}
+.gstep{display:flex;align-items:center;gap:14px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.gstep.done{background:#fafbfc;opacity:.85}
+.gstep-n{flex:0 0 30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;background:var(--asphalt);color:#fff;font-size:14px}
+.gstep.done .gstep-n{background:#1f7a4d}
+.gstep-b{flex:1;min-width:0}
+.gstep-t{font-weight:700;font-size:14.5px}
+.gstep-w{color:var(--steel);font-size:12.5px;margin-top:2px}
+.gstep-a{flex:0 0 auto}
+/* ===== Écran vide ===== */
+.empty{text-align:center;padding:40px 20px;color:var(--steel)}
+.empty-ic{font-size:42px;margin-bottom:10px}
+.empty-t{font-weight:700;font-size:16px;color:var(--ink)}
+.empty-x{font-size:13.5px;max-width:46ch;margin:6px auto 16px}

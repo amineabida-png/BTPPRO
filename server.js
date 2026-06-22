@@ -15,7 +15,7 @@ const { makeCrud } = require("./src/crud");
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "60mb" }));
 app.use(express.static(path.join(__dirname, "public"), { setHeaders: (res, p) => { if (p.endsWith(".webmanifest")) res.setHeader("Content-Type", "application/manifest+json"); if (p.endsWith("sw.js")) res.setHeader("Cache-Control", "no-cache"); } }));
 
 const wrap = (fn) => (req, res) => fn(req, res).catch((err) => {
@@ -49,6 +49,7 @@ function domainOf(p) {
   if (p.startsWith("/api/clients")) return "tiers";
   if (p.startsWith("/api/activite") || p.startsWith("/api/onboarding")) return "admin";
   if (p.startsWith("/api/admin")) return "admin";
+  if (p.startsWith("/api/backup")) return "admin";
   if (p.startsWith("/api/articles") || p.startsWith("/api/stock")) return "stock";
   if (p.startsWith("/api/commandes") || p.startsWith("/api/demandes-achat") || p.startsWith("/api/bons-commande")) return "achats";
   if (p.startsWith("/api/fournisseur") || p.startsWith("/api/sous-traitants") || p.startsWith("/api/soustraitants") || p.startsWith("/api/st-")) return "tiers";
@@ -800,6 +801,30 @@ app.get("/api/dashboard", requireAuth, wrap(async (req, res) => {
     stock_alertes: await one("SELECT count(*)::int n FROM article WHERE stock < seuil AND company_id=$1"),
     incidents_ouverts: await one("SELECT count(*)::int n FROM incident WHERE statut='ouvert' AND company_id=$1"),
   });
+}));
+
+// ══════════════ GUIDE DE DÉMARRAGE ══════════════
+app.get("/api/guide", requireAuth, wrap(async (req, res) => {
+  const company = await cid(req);
+  const co = (await pool.query("SELECT * FROM company WHERE id=$1", [company])).rows[0] || {};
+  const cnt = async (t) => Number((await pool.query(`SELECT count(*)::int n FROM ${t} WHERE company_id=$1`, [company])).rows[0].n);
+  const [clients, chantiers, devis, factures, employees, ouvriers, echeances, users] = await Promise.all([
+    cnt("client"), cnt("chantier"), cnt("devis"), cnt("facture"), cnt("employee"), cnt("ouvrier_chantier"), cnt("echeance"),
+    Number((await pool.query("SELECT count(*)::int n FROM app_user WHERE company_id=$1", [company])).rows[0].n),
+  ]);
+  const societeOk = !!(co.ice && co.rib && (co.rc || co.if_fiscal));
+  const steps = [
+    { key: "societe", titre: "Compléter « Ma société »", pourquoi: "ICE, RC, IF, patente, CNSS et RIB apparaissent sur tous vos documents. Indispensable pour des factures conformes.", view: "societe", fait: societeOk },
+    { key: "equipe", titre: "Inviter votre équipe (optionnel)", pourquoi: "Créez des comptes pour vos collaborateurs avec des droits adaptés (directeur, comptable, chef de chantier…).", view: "users", fait: users > 1 },
+    { key: "client", titre: "Ajouter un premier client", pourquoi: "La base de votre facturation : maître d'ouvrage, promoteur, particulier…", view: "clients", fait: clients > 0 },
+    { key: "chantier", titre: "Créer un premier chantier", pourquoi: "Tout se rattache au chantier : pointage, dépenses, rapports, rentabilité.", view: "chantiers", fait: chantiers > 0 },
+    { key: "devis", titre: "Établir un premier devis", pourquoi: "Chiffrez vos travaux ; le devis se transforme ensuite en facture en un clic.", view: "devis", fait: devis > 0 },
+    { key: "facture", titre: "Émettre une première facture", pourquoi: "Depuis un devis ou en facture directe — avec TVA et retenue de garantie.", view: "factures", fait: factures > 0 },
+    { key: "equipe_paie", titre: "Enregistrer salariés / ouvriers", pourquoi: "Pour la paie marocaine (CNSS, AMO, IR) et les fiches d'entrée des journaliers.", view: "emps", fait: employees > 0 || ouvriers > 0 },
+    { key: "echeancier", titre: "Générer l'échéancier fiscal", pourquoi: "L'app crée vos échéances CNSS, IR, TVA, IS et vous alerte avant chaque date.", view: "echeances", fait: echeances > 0 },
+  ];
+  const faits = steps.filter((s) => s.fait).length;
+  res.json({ steps, total: steps.length, faits, pct: Math.round(faits / steps.length * 100), termine: faits === steps.length });
 }));
 
 // ══════════════ PROFONDEUR MÉTIER ══════════════
@@ -2372,6 +2397,101 @@ app.put("/api/maintenances/:id", requireAuth, wrap(async (req, res) => {
 }));
 app.delete("/api/maintenances/:id", requireAuth, wrap(async (req, res) => { await pool.query("DELETE FROM maintenance WHERE id=$1", [req.params.id]); res.json({ ok: true }); }));
 
+// ══════════════ SAUVEGARDES (export / snapshots / restauration) ══════════════
+function isSuper(req) { return req.user && req.user.role === "DIRECTEUR" && !req.user.company_id; }
+const BACKUP_EXCLUDE = new Set(["backup_snapshot"]);
+async function backupTablesOrdered() {
+  const tables = (await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")).rows.map((r) => r.table_name).filter((t) => !BACKUP_EXCLUDE.has(t));
+  const fks = (await pool.query(`SELECT tc.table_name AS child, ccu.table_name AS parent
+     FROM information_schema.table_constraints tc
+     JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name=tc.constraint_name AND ccu.table_schema=tc.table_schema
+     WHERE tc.constraint_type='FOREIGN KEY' AND tc.table_schema='public'`)).rows;
+  const deps = {}; tables.forEach((t) => (deps[t] = new Set()));
+  fks.forEach((f) => { if (f.child !== f.parent && deps[f.child] && tables.includes(f.parent)) deps[f.child].add(f.parent); });
+  const ordered = [], seen = new Set();
+  const visit = (t, stack) => { if (seen.has(t)) return; if (stack.has(t)) return; stack.add(t); (deps[t] || []).forEach((p) => visit(p, stack)); stack.delete(t); seen.add(t); ordered.push(t); };
+  tables.forEach((t) => visit(t, new Set()));
+  return ordered; // parents avant enfants
+}
+async function buildBackupObject() {
+  const order = await backupTablesOrdered();
+  const data = {}; let rowsTotal = 0;
+  for (const t of order) { const rows = (await pool.query(`SELECT * FROM ${t}`)).rows; data[t] = rows; rowsTotal += rows.length; }
+  return { app: "BTP360", version: 1, created_at: new Date().toISOString(), order, tables: data, rows: rowsTotal };
+}
+async function createSnapshot(origine) {
+  const obj = await buildBackupObject();
+  const json = JSON.stringify(obj);
+  await pool.query("INSERT INTO backup_snapshot (origine,tables_count,rows_count,size_bytes,data) VALUES ($1,$2,$3,$4,$5)",
+    [origine || "auto", obj.order.length, obj.rows, Buffer.byteLength(json), json]);
+  // ne conserve que les 5 derniers
+  await pool.query("DELETE FROM backup_snapshot WHERE id NOT IN (SELECT id FROM backup_snapshot ORDER BY created_at DESC LIMIT 3)");
+  return obj;
+}
+async function restoreFromObject(obj) {
+  if (!obj || !obj.tables) throw new Error("Fichier de sauvegarde invalide");
+  const order = await backupTablesOrdered();
+  const present = order.filter((t) => obj.tables[t]);
+  const withId = new Set((await pool.query("SELECT table_name FROM information_schema.columns WHERE table_schema='public' AND column_name='id'")).rows.map((r) => r.table_name));
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`TRUNCATE ${present.map((t) => `"${t}"`).join(",")} RESTART IDENTITY CASCADE`);
+    for (const t of present) {
+      const rows = obj.tables[t]; if (!rows || !rows.length) continue;
+      const cols = Object.keys(rows[0]);
+      for (const row of rows) {
+        const vals = cols.map((c) => row[c]);
+        const ph = cols.map((_, i) => "$" + (i + 1)).join(",");
+        await client.query(`INSERT INTO "${t}" (${cols.map((c) => `"${c}"`).join(",")}) VALUES (${ph})`, vals);
+      }
+      if (withId.has(t)) await client.query(`SELECT setval(pg_get_serial_sequence('"${t}"','id'), GREATEST((SELECT COALESCE(MAX(id),1) FROM "${t}"),1))`);
+    }
+    await client.query("COMMIT");
+  } catch (e) { await client.query("ROLLBACK"); throw e; }
+  finally { client.release(); }
+  return present.length;
+}
+app.get("/api/backup/download", requireAuth, wrap(async (req, res) => {
+  if (!isSuper(req)) return res.status(403).json({ error: "Réservé au super-administrateur" });
+  const obj = await buildBackupObject();
+  await pool.query("INSERT INTO app_meta (key,value) VALUES ('last_backup_download', now()::text) ON CONFLICT (key) DO UPDATE SET value=now()::text");
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Content-Disposition", `attachment; filename="btp360-sauvegarde-${stamp}.json"`);
+  res.send(JSON.stringify(obj));
+}));
+app.get("/api/backup/snapshots", requireAuth, wrap(async (req, res) => {
+  if (!isSuper(req)) return res.status(403).json({ error: "Réservé au super-administrateur" });
+  const rows = (await pool.query("SELECT id,created_at,origine,tables_count,rows_count,size_bytes FROM backup_snapshot ORDER BY created_at DESC")).rows;
+  const last = (await pool.query("SELECT value FROM app_meta WHERE key='last_backup_download'")).rows[0];
+  res.json({ snapshots: rows, lastDownload: last ? last.value : null });
+}));
+app.post("/api/backup/snapshot", requireAuth, wrap(async (req, res) => {
+  if (!isSuper(req)) return res.status(403).json({ error: "Réservé au super-administrateur" });
+  const obj = await createSnapshot("manuel");
+  res.status(201).json({ ok: true, rows: obj.rows, tables: obj.order.length });
+}));
+app.get("/api/backup/snapshots/:id/download", requireAuth, wrap(async (req, res) => {
+  if (!isSuper(req)) return res.status(403).json({ error: "Réservé au super-administrateur" });
+  const s = (await pool.query("SELECT * FROM backup_snapshot WHERE id=$1", [req.params.id])).rows[0];
+  if (!s) return res.status(404).json({ error: "Introuvable" });
+  const stamp = new Date(s.created_at).toISOString().slice(0, 16).replace(/[:T]/g, "-");
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Content-Disposition", `attachment; filename="btp360-snapshot-${stamp}.json"`);
+  res.send(s.data);
+}));
+app.post("/api/backup/restore", requireAuth, /*BODY*/ wrap(async (req, res) => {
+  if (!isSuper(req)) return res.status(403).json({ error: "Réservé au super-administrateur" });
+  if (!req.body || req.body.confirm !== "RESTAURER") return res.status(400).json({ error: "Confirmation manquante" });
+  let obj = req.body.backup;
+  if (typeof obj === "string") { try { obj = JSON.parse(obj); } catch { return res.status(400).json({ error: "JSON invalide" }); } }
+  // filet de sécurité : snapshot avant restauration
+  try { await createSnapshot("avant_restauration"); } catch (e) { /* continue */ }
+  const n = await restoreFromObject(obj);
+  res.json({ ok: true, tables: n });
+}));
+
 // ══════════════ CENTRE D'ALERTES ══════════════
 app.get("/api/alertes", requireAuth, wrap(async (req, res) => {
   const company = await cid(req);
@@ -2401,6 +2521,11 @@ app.get("/api/alertes", requireAuth, wrap(async (req, res) => {
     "maintenance", "info", "maintenances", (n) => `${n} matériel(s) à entretenir (sous 15 j)`);
   add(await one("SELECT count(*)::int n FROM accident_travail WHERE company_id=$1 AND date_decl_assureur IS NULL AND date_accident >= current_date - 5"),
     "accidents", "alerte", "accidents", (n) => `${n} accident(s) à déclarer à l'assureur (loi 18-12, 5 j)`);
+  if (isSuper(req)) {
+    const last = (await pool.query("SELECT value FROM app_meta WHERE key='last_backup_download'")).rows[0];
+    const old = !last || (Date.now() - new Date(last.value).getTime()) > 7 * 86400000;
+    if (old) out.push({ domaine: "backup", niveau: "info", view: "sauvegardes", count: 1, message: "Pensez à télécharger une sauvegarde (aucune depuis 7 j ou plus)" });
+  }
   res.json({ total: out.reduce((s, a) => s + a.count, 0), alertes: out });
 }));
 
@@ -2950,4 +3075,18 @@ app.get("*", (_req, res) => res.sendFile(path.join(__dirname, "public", "index.h
 const PORT = process.env.PORT || 3000;
 initDb()
   .then(() => app.listen(PORT, () => console.log(`🚀 BTP360 sur le port ${PORT}`)))
+  .then(() => scheduleBackups())
   .catch((err) => { console.error("Échec init base:", err); process.exit(1); });
+
+// Sauvegarde automatique : au démarrage si la dernière date de plus de 20h, puis toutes les 24h.
+async function scheduleBackups() {
+  const run = async () => {
+    try {
+      const last = (await pool.query("SELECT created_at FROM backup_snapshot WHERE origine='auto' ORDER BY created_at DESC LIMIT 1")).rows[0];
+      const staleMs = 20 * 3600 * 1000;
+      if (!last || (Date.now() - new Date(last.created_at).getTime()) > staleMs) { await createSnapshot("auto"); console.log("💾 Snapshot automatique créé"); }
+    } catch (e) { console.error("Snapshot auto échoué:", e.message); }
+  };
+  setTimeout(run, 15000); // au démarrage (après stabilisation)
+  setInterval(run, 24 * 3600 * 1000); // toutes les 24h
+}
