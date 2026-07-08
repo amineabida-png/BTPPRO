@@ -698,6 +698,14 @@ async function initDb() {
     console.log(`👤 Admin : ${email} / ${pwd}`);
   });
 
+  // Mise à jour du mot de passe admin si ADMIN_PASSWORD est défini
+  if (process.env.ADMIN_PASSWORD) {
+    const email = process.env.ADMIN_EMAIL || "admin@btppro.ma";
+    const hash = await bcrypt.hash(process.env.ADMIN_PASSWORD, 10);
+    await pool.query("UPDATE app_user SET password_hash=$1 WHERE email=$2", [hash, email]);
+    console.log(`🔑 Mot de passe admin mis à jour pour : ${email}`);
+  }
+
   if (DEMO) await seedIfEmpty("employee", async () => {
     for (const r of [
       ["BTP-0101", "Hamid Ouazzani", "Manœuvre", 3500, 6, 1],
