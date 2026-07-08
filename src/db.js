@@ -10,6 +10,12 @@ const pool = new Pool({
   ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : false,
 });
 
+// Force search_path=public sur chaque nouvelle connexion pour éviter les conflits
+// avec d'autres services (ex: Prisma) qui partagent la même instance PostgreSQL.
+pool.on("connect", (client) => {
+  client.query("SET search_path TO public").catch(() => {});
+});
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS company (
   id serial PRIMARY KEY, raison_sociale text NOT NULL, ice text, created_at timestamptz DEFAULT now());
