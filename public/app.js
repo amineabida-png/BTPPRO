@@ -59,7 +59,7 @@ el("login-form").addEventListener("submit", async (e) => {
 });
 el("logout").addEventListener("click", logout);
 function logout() { token = null; me = null; activeCompany = null; localStorage.clear(); el("app").classList.add("hide"); el("login").classList.remove("hide"); }
-function enterApp() { el("login").classList.add("hide"); el("app").classList.remove("hide"); el("who").textContent = me ? (me.name || me.email) : ""; loadCompanies().then(loadPerms).then(() => { if (me && me.company_id) { document.querySelector('.nav[data-view="onboarding"]')?.classList.add("hide"); document.querySelector('.nav[data-view="superadmin"]')?.classList.add("hide"); } if (typeof refreshAlertBadge === "function") refreshAlertBadge(); }); }
+function enterApp() { el("login").classList.add("hide"); el("app").classList.remove("hide"); el("who").textContent = me ? (me.name || me.email) : ""; loadCompanies().then(loadPerms).then(() => { if (me && me.company_id) { document.querySelector('.nav[data-view="onboarding"]')?.classList.add("hide"); document.querySelector('.nav[data-view="superadmin"]')?.classList.add("hide"); } if (typeof refreshAlertBadge === "function") refreshAlertBadge(); checkSubscription(); }); }
 function showPaywall(sub) {
   const prix = "30 jours : 99 DH · 1 an : 990 DH · À vie : 3990 DH";
   el("app").classList.add("hide"); el("login").classList.add("hide");
@@ -2305,30 +2305,49 @@ async function refreshAlertBadge() {
 }
 
 /* ===================== Super Admin (SaaS) ===================== */
-const PLAN_LABEL = { "48h": "Essai 48h", "30j": "30 jours", "1an": "1 an", "avie": "À vie" };
+const PLAN_LABEL = { "48h": "Essai 48h", "30j": "30 jours", "1an": "1 an", "avie": "À vie", "trial_30": "Essai 30j", "annual": "1 An", "lifetime": "À Vie" };
+const SUB_TYPE_LABEL = { "trial_30": "Essai 30j", "annual": "Annuel", "lifetime": "À vie" };
+
+function subStatusBadge(c) {
+  const isLifetime = c.plan === "avie" || c.subscription_type === "lifetime";
+  if (isLifetime) return '<span class="pill" style="background:#e9d5ff;color:#7c3aed">À vie</span>';
+  if (c.expire) return '<span class="pill" style="background:var(--rose-bg);color:var(--rose)">Expiré</span>';
+  if (c.abonnement_fin) {
+    const jours = Math.ceil((new Date(c.abonnement_fin) - new Date()) / 86400000);
+    if (jours <= 7) return `<span class="pill" style="background:#fff3cd;color:#856404">Expire dans ${jours}j</span>`;
+  }
+  return '<span class="pill" style="background:var(--green-bg);color:var(--green)">Actif</span>';
+}
+
 async function renderSuperAdmin() {
   const list = await api("/api/admin/overview");
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString("fr-FR") : "—";
+  const actifs = list.filter((c) => !c.expire).length;
+  const expires = list.filter((c) => { if (!c.abonnement_fin) return false; const j = Math.ceil((new Date(c.abonnement_fin) - new Date()) / 86400000); return !c.expire && j <= 7; }).length;
   V().innerHTML = `<div class="bar"><div><h1>👑 Super Admin</h1><div class="sub">Gestion des clients, abonnements et utilisateurs</div></div>
     <button class="btn sm" onclick="show('onboarding')">+ Nouvel abonné</button></div>
   <div class="grid kpis" style="margin-bottom:16px">
-    <div class="card kpi"><div class="lbl">30 jours</div><div class="val mono">99 <small>DH</small></div></div>
+    <div class="card kpi"><div class="lbl">Essai 30j</div><div class="val mono">99 <small>DH</small></div></div>
     <div class="card kpi"><div class="lbl">1 an</div><div class="val mono">990 <small>DH</small></div></div>
     <div class="card kpi ok"><div class="lbl">À vie</div><div class="val mono">3990 <small>DH</small></div></div>
-    <div class="card kpi flat"><div class="lbl">Clients</div><div class="val mono">${list.length}</div></div></div>
+    <div class="card kpi flat"><div class="lbl">Clients actifs</div><div class="val mono">${actifs} <small>/ ${list.length}</small></div></div>
+    ${expires > 0 ? `<div class="card kpi" style="border-color:#ffc107"><div class="lbl">Expirent &lt;7j</div><div class="val mono" style="color:#856404">${expires}</div></div>` : ""}</div>
   <div class="card"><div class="colhead">Sociétés clientes</div>
-    <table><thead><tr><th>Société</th><th>Formule</th><th>Échéance</th><th>Statut</th><th class="r">Users</th><th></th></tr></thead><tbody>
+    <table><thead><tr><th>Société</th><th>Formule</th><th>Type abonnement</th><th>Échéance</th><th>Statut</th><th class="r">Users</th><th></th></tr></thead><tbody>
     ${list.map((c) => `<tr>
       <td><b>${c.raison_sociale || ""}</b>${c.ville ? '<div class="muted" style="font-size:12px">' + c.ville + "</div>" : ""}</td>
       <td>${c.plan ? PLAN_LABEL[c.plan] || c.plan : "—"}</td>
-      <td>${c.plan === "avie" ? "Illimité" : fmtDate(c.abonnement_fin)}</td>
-      <td>${c.expire ? '<span class="pill" style="background:var(--rose-bg);color:var(--rose)">Expiré</span>' : '<span class="pill" style="background:var(--green-bg);color:var(--green)">Actif</span>'}</td>
+      <td>${c.subscription_type ? (SUB_TYPE_LABEL[c.subscription_type] || c.subscription_type) : "—"}</td>
+      <td>${(c.plan === "avie" || c.subscription_type === "lifetime") ? '<span style="color:#7c3aed;font-weight:600">Illimité</span>' : fmtDate(c.abonnement_fin)}</td>
+      <td>${subStatusBadge(c)}</td>
       <td class="r">${c.nb_users}</td>
-      <td class="r">
-        <select class="stsel" onchange="setPlan(${c.id},this.value)"><option value="">Activer…</option><option value="48h">Essai 48h (gratuit)</option><option value="30j">30 jours (99)</option><option value="1an">1 an (990)</option><option value="avie">À vie (3990)</option></select>
-        <button class="btn sm ${c.actif ? "danger" : ""}" onclick="toggleEtat(${c.id},${c.actif ? "false" : "true"})">${c.actif ? "Suspendre" : "Réactiver"}</button>
-        <button class="btn sm ghost" onclick="adminUsers(${c.id},'${(c.raison_sociale || "").replace(/'/g, "")}')">👤 Utilisateurs</button>
-        <button class="btn sm danger" onclick="delCompany(${c.id},'${(c.raison_sociale || "").replace(/'/g, "")}')">🗑 Supprimer</button>
+      <td class="r" style="white-space:nowrap">
+        <button class="btn sm" onclick="setSubscription(${c.id},'trial_30')" title="30 jours">30 Jours</button>
+        <button class="btn sm" onclick="setSubscription(${c.id},'annual')" title="1 an">1 An</button>
+        <button class="btn sm ok" onclick="setSubscription(${c.id},'lifetime')" title="À vie" style="background:#7c3aed;border-color:#7c3aed;color:#fff">A vie</button>
+        <button class="btn sm ${c.actif ? "danger" : ""}" onclick="toggleEtat(${c.id},${c.actif ? "false" : "true"})">${c.actif ? "Suspendre" : "Reactiver"}</button>
+        <button class="btn sm ghost" onclick="adminUsers(${c.id},'${(c.raison_sociale || "").replace(/'/g, "")}')">Utilisateurs</button>
+        <button class="btn sm danger" onclick="delCompany(${c.id},'${(c.raison_sociale || "").replace(/'/g, "")}')">Supprimer</button>
       </td></tr>`).join("")}
     </tbody></table></div>
   <div class="card" style="margin-top:16px;max-width:600px">
@@ -2342,6 +2361,16 @@ async function renderSuperAdmin() {
     <div id="rp-msg" style="margin-top:10px;font-size:13px"></div>
   </div>
   <div class="muted" style="margin-top:12px;font-size:13px">💡 L'activation est manuelle : tu encaisses le paiement du client, puis tu choisis sa formule ici. Les mises à jour de l'application (suite aux retours des clients) se déploient en poussant le code sur GitHub.</div>`;
+}
+
+// Nouvelle fonction utilisant la route normalisée /api/admin/companies/:id/subscription
+async function setSubscription(id, type) {
+  const labels = { "trial_30": "30 Jours", "annual": "1 An", "lifetime": "À vie" };
+  if (!confirm("Activer l'abonnement « " + (labels[type] || type) + " » pour ce client ?")) return;
+  try {
+    await api("/api/admin/companies/" + id + "/subscription", { method: "POST", body: JSON.stringify({ type }) });
+    renderSuperAdmin();
+  } catch (e) { alert(e.message); }
 }
 async function resetPwdByEmail() {
   const email = el("rp-email").value.trim(), pwd = el("rp-newpwd").value;
@@ -2357,6 +2386,23 @@ async function setPlan(id, plan) {
   if (!plan) return;
   if (!confirm("Activer la formule « " + (PLAN_LABEL[plan] || plan) + " » pour ce client ?")) { renderSuperAdmin(); return; }
   try { await api("/api/admin/companies/" + id + "/abonnement", { method: "POST", body: JSON.stringify({ plan }) }); renderSuperAdmin(); } catch (e) { alert(e.message); }
+}
+
+// Vérification abonnement au démarrage (pour les non-super-admin)
+async function checkSubscription() {
+  if (!me || !me.company_id) return; // super admin, pas de vérification
+  try {
+    const s = await api("/api/subscription/status");
+    if (!s.active) {
+      showPaywall({ plan: s.plan });
+    } else if (s.expires_in_days !== null && s.expires_in_days <= 7 && !s.lifetime) {
+      // Avertissement non bloquant
+      const banner = document.createElement("div");
+      banner.style = "background:#fff3cd;color:#856404;padding:8px 16px;text-align:center;font-size:13px;border-bottom:1px solid #ffc107";
+      banner.textContent = `⚠️ Votre abonnement expire dans ${s.expires_in_days} jour(s). Contactez votre fournisseur pour le renouveler.`;
+      document.body.insertBefore(banner, document.body.firstChild);
+    }
+  } catch (e) { /* ne pas bloquer si l'API échoue */ }
 }
 async function toggleEtat(id, actif) {
   try { await api("/api/admin/companies/" + id + "/etat", { method: "POST", body: JSON.stringify({ actif }) }); renderSuperAdmin(); } catch (e) { alert(e.message); }

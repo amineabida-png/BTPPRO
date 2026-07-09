@@ -95,7 +95,9 @@ async function defaultCompany() {
 const cid = async (req) => (req.user && req.user.company_id) || req.companyId || (await defaultCompany());
 
 // ── Abonnement (SaaS) ──
-const PLAN_DUREE = { "48h": 2, "30j": 30, "1an": 365, "avie": null };
+// Types normalisés : trial_30 | annual | lifetime (plus anciens codes : 48h, 30j, 1an, avie)
+const PLAN_DUREE = { "48h": 2, "30j": 30, "1an": 365, "avie": null, "trial_30": 30, "annual": 365, "lifetime": null };
+const SUBSCRIPTION_TYPE_MAP = { "trial_30": "trial_30", "annual": "annual", "lifetime": "lifetime", "48h": "trial_30", "30j": "trial_30", "1an": "annual", "avie": "lifetime" };
 const subActive = (co) => co && co.actif !== false && (!co.abonnement_fin || new Date(co.abonnement_fin) > new Date());
 const subCache = new Map();
 async function companyActive(id) {
@@ -2664,7 +2666,7 @@ function requireSuper(req, res) {
 app.get("/api/admin/overview", requireAuth, wrap(async (req, res) => {
   if (!requireSuper(req, res)) return;
   const rows = (await pool.query(
-    `SELECT c.id, c.raison_sociale, c.ice, c.ville, c.plan, c.abonnement_fin, c.actif,
+    `SELECT c.id, c.raison_sociale, c.ice, c.ville, c.plan, c.subscription_type, c.abonnement_fin, c.actif,
             (SELECT count(*)::int FROM app_user u WHERE u.company_id=c.id) AS nb_users
      FROM company c ORDER BY c.id`)).rows;
   res.json(rows.map((c) => ({ ...c, expire: !subActive(c) })));
@@ -2672,9 +2674,29 @@ app.get("/api/admin/overview", requireAuth, wrap(async (req, res) => {
 app.post("/api/admin/companies/:id/abonnement", requireAuth, wrap(async (req, res) => {
   if (!requireSuper(req, res)) return;
   const { plan } = req.body || {};
-  if (!(plan in PLAN_DUREE)) return res.status(400).json({ error: "Plan invalide (30j, 1an ou avie)" });
+  if (!(plan in PLAN_DUREE)) return res.status(400).json({ error: "Plan invalide (trial_30, annual, lifetime, 30j, 1an ou avie)" });
   const fin = PLAN_DUREE[plan] === null ? null : new Date(Date.now() + PLAN_DUREE[plan] * 86400000);
-  const co = (await pool.query("UPDATE company SET plan=$2, abonnement_fin=$3, actif=true WHERE id=$1 RETURNING id,raison_sociale,plan,abonnement_fin,actif", [req.params.id, plan, fin])).rows[0];
+  const stype = SUBSCRIPTION_TYPE_MAP[plan] || plan;
+  const co = (await pool.query(
+    "UPDATE company SET plan=$2, abonnement_fin=$3, actif=true, subscription_type=$4 WHERE id=$1 RETURNING id,raison_sociale,plan,subscription_type,abonnement_fin,actif",
+    [req.params.id, plan, fin, stype])).rows[0];
+  if (!co) return res.status(404).json({ error: "Société introuvable" });
+  subCache.delete(Number(req.params.id));
+  res.json(co);
+}));
+
+// ── Nouvelle route : POST /api/admin/companies/:id/subscription (types normalisés) ──
+app.post("/api/admin/companies/:id/subscription", requireAuth, wrap(async (req, res) => {
+  if (!requireSuper(req, res)) return;
+  const { type } = req.body || {};
+  const VALID_TYPES = ["trial_30", "annual", "lifetime"];
+  if (!VALID_TYPES.includes(type)) return res.status(400).json({ error: "Type invalide. Valeurs acceptées : trial_30, annual, lifetime" });
+  const durees = { "trial_30": 30, "annual": 365, "lifetime": null };
+  const planMap = { "trial_30": "30j", "annual": "1an", "lifetime": "avie" };
+  const fin = durees[type] === null ? null : new Date(Date.now() + durees[type] * 86400000);
+  const co = (await pool.query(
+    "UPDATE company SET subscription_type=$2, plan=$3, abonnement_fin=$4, actif=true WHERE id=$1 RETURNING id,raison_sociale,plan,subscription_type,abonnement_fin,actif",
+    [req.params.id, type, planMap[type], fin])).rows[0];
   if (!co) return res.status(404).json({ error: "Société introuvable" });
   subCache.delete(Number(req.params.id));
   res.json(co);
@@ -3067,6 +3089,26 @@ app.post("/api/export/xlsx", requireAuth, wrap(async (req, res) => {
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.setHeader("Content-Disposition", `attachment; filename="${(title || "export").replace(/[^\w-]+/g, "_")}.xlsx"`);
   await wb.xlsx.write(res); res.end();
+}));
+
+// ── Statut d'abonnement (pour le frontend SPA) ──
+app.get("/api/subscription/status", requireAuth, wrap(async (req, res) => {
+  if (!req.user.company_id) return res.json({ active: true, superadmin: true });
+  const co = (await pool.query("SELECT plan, subscription_type, abonnement_fin, actif FROM company WHERE id=$1", [req.user.company_id])).rows[0];
+  if (!co) return res.json({ active: false, reason: "Société introuvable" });
+  const active = subActive(co);
+  const now = new Date();
+  const fin = co.abonnement_fin ? new Date(co.abonnement_fin) : null;
+  const expiresInDays = fin ? Math.ceil((fin - now) / 86400000) : null;
+  res.json({
+    active,
+    plan: co.plan,
+    subscription_type: co.subscription_type || "trial_30",
+    abonnement_fin: co.abonnement_fin,
+    actif: co.actif,
+    expires_in_days: expiresInDays,
+    lifetime: co.plan === "avie" || co.subscription_type === "lifetime",
+  });
 }));
 
 // ── SPA fallback ──

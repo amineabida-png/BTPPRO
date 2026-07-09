@@ -502,6 +502,7 @@ ALTER TABLE app_user ADD COLUMN IF NOT EXISTS company_id int REFERENCES company(
 ALTER TABLE company ADD COLUMN IF NOT EXISTS plan text;
 ALTER TABLE company ADD COLUMN IF NOT EXISTS abonnement_fin timestamptz;
 ALTER TABLE company ADD COLUMN IF NOT EXISTS actif boolean DEFAULT true;
+ALTER TABLE company ADD COLUMN IF NOT EXISTS subscription_type TEXT DEFAULT 'trial_30';
 
 -- Journal d'activité (audit trail)
 CREATE TABLE IF NOT EXISTS activite (
