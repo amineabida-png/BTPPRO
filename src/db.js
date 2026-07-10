@@ -10,10 +10,9 @@ const pool = new Pool({
   ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : false,
 });
 
-// Force search_path=public sur chaque nouvelle connexion pour éviter les conflits
-// avec d'autres services (ex: Prisma) qui partagent la même instance PostgreSQL.
+// Force search_path=btppro : schéma dédié isolé des autres apps sur la même instance.
 pool.on("connect", (client) => {
-  client.query("SET search_path TO public").catch(() => {});
+  client.query("SET search_path TO btppro").catch(() => {});
 });
 
 const SCHEMA = `
